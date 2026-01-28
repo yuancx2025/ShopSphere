@@ -137,7 +137,7 @@ npm run build
 # Outputs to dist/ directory
 ```
 
-## Future Enhancements
+## Currently Working On..
 
 ### Security & Authentication
 - **JWT Token Implementation**: Migrate from custom token system to industry-standard JWT for improved security and stateless authentication
