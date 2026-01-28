@@ -1,6 +1,6 @@
 # E-Commerce Application
 
-A full-stack e-commerce platform with comprehensive product management, shopping cart, payment processing, and order tracking capabilities. Built with modern technologies and designed for scalability.
+A full-stack e-commerce platform with comprehensive product management, shopping cart, payment processing, and order tracking capabilities. 
 
 ## Features
 
@@ -87,7 +87,7 @@ e-commerce/
 
 ### Using Docker Compose
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 Access: Frontend at `http://localhost:3000`, API at `http://localhost:8080`
 
