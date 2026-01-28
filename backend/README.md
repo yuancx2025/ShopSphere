@@ -2,7 +2,7 @@
 
 Spring Boot backend API for the E-Commerce application.
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 - Java 17
 - Spring Boot 2.5.4
@@ -11,7 +11,7 @@ Spring Boot backend API for the E-Commerce application.
 - Swagger UI
 - Stripe Payment Integration
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 src/main/java/ecommerce/
@@ -26,7 +26,7 @@ src/main/java/ecommerce/
 └── service/                     # Business logic services
 ```
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -60,24 +60,24 @@ mvn spring-boot:run
 
 The application will start on `http://localhost:8080`
 
-## 📚 API Documentation
+## API Documentation
 
 Swagger UI is available at: `http://localhost:8080/swagger-ui/index.html`
 
-## 🧪 Running Tests
+## Running Tests
 
 ```bash
 ./mvnw test
 ```
 
-## 📦 Building for Production
+## Building for Production
 
 ```bash
 ./mvnw clean package -DskipTests
 java -jar target/ecommerce-0.0.1-SNAPSHOT.jar
 ```
 
-## 🔧 Configuration Profiles
+## Configuration Profiles
 
 - **default**: Development configuration
 - **dev**: Development with verbose logging
@@ -88,7 +88,7 @@ Run with a specific profile:
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-## 📄 Environment Variables
+## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
