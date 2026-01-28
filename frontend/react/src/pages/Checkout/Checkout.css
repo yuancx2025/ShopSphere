@@ -1,0 +1,36 @@
+.div_class{
+    margin-top: 5%;
+    width: 50%;
+    align-content: center;
+}
+
+.checkout_button{
+    background-color: #5d3dec;
+    border: none;
+    color: white;
+    padding: 15px 30px;
+    text-align: center;
+    text-decoration: none;
+    font-size: 15px;
+    font-weight: bold;
+    border-radius: 15px;
+}
+
+.checkout_button:focus{
+    outline: none;
+    box-shadow: none;
+}
+
+.checkout_button:disabled{
+    background-color: #9b86f7;
+    border: none;
+    color: white;
+    padding: 15px 30px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 15px;
+    font-weight: bold;
+    border-radius: 15px;
+    cursor:not-allowed;
+}
