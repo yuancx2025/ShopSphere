@@ -26,6 +26,9 @@ const Signin: React.FC<Props> = ({ baseURL }) => {
         headers: { 'Content-Type': 'application/json' },
       });
       localStorage.setItem('token', res.data.token);
+      if (res.data.user) {
+        localStorage.setItem('user', JSON.stringify(res.data.user));
+      }
       navigate('/');
       swal({ text: 'Login successful. Please continue', icon: 'success' });
     } catch (err) {

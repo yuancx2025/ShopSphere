@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import swal from 'sweetalert';
 import { Category } from '../../types';
+import { authHeaders } from '../../utils/auth';
 
 interface Props {
   baseURL: string;
@@ -29,7 +30,7 @@ const AddProduct: React.FC<Props> = ({ baseURL, categories, fetchData, loading }
 
     try {
       await axios.post(`${baseURL}product/add`, newProduct, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
       });
       await fetchData();
       swal({

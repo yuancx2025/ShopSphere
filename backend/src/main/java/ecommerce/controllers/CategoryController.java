@@ -4,6 +4,7 @@ package ecommerce.controllers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -32,6 +33,7 @@ public class CategoryController {
     }
 
 	@PostMapping("/create")
+	@PreAuthorize("hasRole('ADMIN')")
 	public ResponseEntity<ApiResponse> createCategory(@Valid @RequestBody Category category) {
 		if (Objects.nonNull(categoryService.readCategory(category.getCategoryName()))) {
 			return new ResponseEntity<ApiResponse>(new ApiResponse(false, "category already exists"), HttpStatus.CONFLICT);
@@ -41,6 +43,7 @@ public class CategoryController {
 	}
 
 	@PostMapping("/update/{categoryID}")
+	@PreAuthorize("hasRole('ADMIN')")
 	public ResponseEntity<ApiResponse> updateCategory(@PathVariable("categoryID") Integer categoryID, @Valid @RequestBody Category category) {
 		// Check to see if the category exists.
 		if (Objects.nonNull(categoryService.readCategory(categoryID))) {

@@ -1,76 +1,60 @@
 package ecommerce.controllers;
 
+import java.util.ArrayList;
+import java.util.List;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import ecommerce.common.ApiResponse;
 import ecommerce.dto.product.ProductDto;
 import ecommerce.exceptions.AuthenticationFailException;
+import ecommerce.exceptions.ProductNotExistException;
 import ecommerce.model.Product;
 import ecommerce.model.User;
 import ecommerce.model.WishList;
-import ecommerce.repository.ProductRepository;
-import ecommerce.service.AuthenticationService;
-import ecommerce.service.CategoryService;
+import ecommerce.security.CurrentUserService;
 import ecommerce.service.ProductService;
 import ecommerce.service.WishListService;
-
-import java.util.ArrayList;
-import java.util.List;
 
 @RestController
 @RequestMapping("/wishlist")
 public class WishListController {
 
-    @Autowired
-    private WishListService wishListService;
+    private final WishListService wishListService;
+    private final CurrentUserService currentUserService;
+    private final ProductService productService;
 
-    @Autowired
-    private AuthenticationService authenticationService;
-
-    @Autowired
-    private ProductRepository productRepository;
-
-    /*
-    API to add a new product in wishlist
-     */
-    @PostMapping("/add")
-    public ResponseEntity<ApiResponse> addWishList(@RequestBody ProductDto productDto, @RequestParam("token") String token) throws AuthenticationFailException {
-        // first authenticate if the token is valid
-        authenticationService.authenticate(token);
-        // then fetch the user linked to the token
-        User user = authenticationService.getUser(token);
-
-        Product product = productRepository.getById(productDto.getId());
-
-        // save wish list
-        WishList wishList = new WishList(user, product);
-        wishListService.createWishlist(wishList);
-
-        return new ResponseEntity<ApiResponse>(new ApiResponse(true, "Added to wishlist"), HttpStatus.CREATED);
+    public WishListController(
+            WishListService wishListService,
+            CurrentUserService currentUserService,
+            ProductService productService) {
+        this.wishListService = wishListService;
+        this.currentUserService = currentUserService;
+        this.productService = productService;
     }
 
-    @GetMapping("/{token}")
-    public ResponseEntity<List<ProductDto>> getWishList(@PathVariable("token") String token) throws AuthenticationFailException {
-        // first authenticate if the token is valid
-        authenticationService.authenticate(token);
-        // then fetch the user linked to the token
-        User user = authenticationService.getUser(token);
-        // first retrieve the wishlist items
-        List<WishList> wishLists = wishListService.readWishList(user);
+    @PostMapping("/add")
+    public ResponseEntity<ApiResponse> addWishList(@RequestBody ProductDto productDto)
+            throws AuthenticationFailException, ProductNotExistException {
+        User user = currentUserService.requireCurrentUser();
+        Product product = productService.getProductById(productDto.getId());
+        wishListService.createWishlist(new WishList(user, product));
+        return new ResponseEntity<>(new ApiResponse(true, "Added to wishlist"), HttpStatus.CREATED);
+    }
 
+    @GetMapping("/")
+    public ResponseEntity<List<ProductDto>> getWishList() throws AuthenticationFailException {
+        User user = currentUserService.requireCurrentUser();
         List<ProductDto> products = new ArrayList<>();
-        for (WishList wishList : wishLists) {
-            // change each product to product DTO
+        for (WishList wishList : wishListService.readWishList(user)) {
             products.add(new ProductDto(wishList.getProduct()));
         }
-        // send the response to user
         return new ResponseEntity<>(products, HttpStatus.OK);
     }
-
-
 }

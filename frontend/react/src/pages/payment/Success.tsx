@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import { authHeaders } from '../../utils/auth';
 
 interface Props {
   baseURL: string;
@@ -19,7 +20,10 @@ const PaymentSuccess: React.FC<Props> = ({ baseURL }) => {
   useEffect(() => {
     if (!token || !sessionId) return;
     axios
-      .post(`${baseURL}order/add/?token=${token}&sessionId=${sessionId}`)
+      .post(`${baseURL}order/add`, null, {
+        params: { sessionId },
+        headers: authHeaders(),
+      })
       .then(() => navigate('/orders'))
       .catch((error) => console.error(error));
   }, [baseURL, navigate, sessionId, token]);

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { CartItem, CartResponse } from '../../types';
+import { authHeaders } from '../../utils/auth';
 import './Checkout.css';
 
 declare global {
@@ -39,7 +40,7 @@ const Checkout: React.FC<Props> = ({ baseURL }) => {
   useEffect(() => {
     if (!token) return;
     axios
-      .get<CartResponse>(`${baseURL}cart/?token=${token}`)
+      .get<CartResponse>(`${baseURL}cart/`, { headers: authHeaders() })
       .then((response) => {
         const items: CartItem[] = response.data.cartItems;
         const body = items.map((item) => ({
@@ -56,7 +57,7 @@ const Checkout: React.FC<Props> = ({ baseURL }) => {
   const goToCheckout = () => {
     if (!stripe || checkoutBodyArray.length === 0) return;
     axios
-      .post(`${baseURL}order/create-checkout-session`, checkoutBodyArray)
+      .post(`${baseURL}order/create-checkout-session`, checkoutBodyArray, { headers: authHeaders() })
       .then((response) => {
         localStorage.setItem('sessionId', response.data.sessionId);
         return response.data;

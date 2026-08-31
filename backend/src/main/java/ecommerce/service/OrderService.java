@@ -145,9 +145,8 @@ public class OrderService {
 
         Order order = optionalOrder.get();
 
-        if(order.getUser() != user) {
-            // else throw OrderNotFoundException
-            throw  new OrderNotFoundException("order does not belong to user");
+        if (order.getUser() == null || !order.getUser().getId().equals(user.getId())) {
+            throw new OrderNotFoundException("order does not belong to user");
         }
 
         // return the order

@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { CartItem, CartResponse } from '../../types';
+import { authHeaders } from '../../utils/auth';
 import './Cart.css';
 
 interface Props {
@@ -14,14 +15,9 @@ const Cart: React.FC<Props> = ({ baseURL }) => {
   const [totalCost, setTotalCost] = useState(0);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    setToken(localStorage.getItem('token'));
-  }, []);
-
-  useEffect(() => {
-    if (!token) return;
+  const loadCart = useCallback(() => {
     axios
-      .get<CartResponse>(`${baseURL}cart/?token=${token}`)
+      .get<CartResponse>(`${baseURL}cart/`, { headers: authHeaders() })
       .then((response) => {
         if (response.status === 200) {
           setCartItems(response.data.cartItems);
@@ -29,13 +25,34 @@ const Cart: React.FC<Props> = ({ baseURL }) => {
         }
       })
       .catch((error) => console.error(error));
-  }, [baseURL, token]);
+  }, [baseURL]);
+
+  useEffect(() => {
+    setToken(localStorage.getItem('token'));
+  }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    loadCart();
+  }, [token, loadCart]);
+
+  const updateQuantity = (cartItemId: number | undefined, quantity: number) => {
+    if (!cartItemId || quantity < 1) return;
+    axios
+      .put(`${baseURL}cart/update/${cartItemId}`, { quantity }, { headers: authHeaders() })
+      .then(() => loadCart())
+      .catch((error) => console.error(error));
+  };
+
+  const removeItem = (cartItemId: number | undefined) => {
+    if (!cartItemId) return;
+    axios
+      .delete(`${baseURL}cart/delete/${cartItemId}`, { headers: authHeaders() })
+      .then(() => loadCart())
+      .catch((error) => console.error(error));
+  };
 
   const isDisabled = () => cartItems.length === 0;
-
-  const checkout = () => {
-    navigate('/checkout');
-  };
 
   if (!token) return <div className="text-center p-5">Please sign in to view your cart.</div>;
 
@@ -47,11 +64,11 @@ const Cart: React.FC<Props> = ({ baseURL }) => {
         </div>
       </div>
       {cartItems.map((cartItem) => (
-        <div key={cartItem.product.id} className="row mt-2 pt-3 justify-content-around">
+        <div key={cartItem.id ?? cartItem.product.id} className="row mt-2 pt-3 justify-content-around">
           <div className="col-2" />
           <div className="col-md-3 embed-responsive embed-responsive-16by9">
             <Link to={`/product/show/${cartItem.product.id}`}>
-              <img src={cartItem.product.imageURL} className="w-100 card-img-top embed-responsive-item" />
+              <img src={cartItem.product.imageURL} className="w-100 card-img-top embed-responsive-item" alt="" />
             </Link>
           </div>
           <div className="col-md-5 px-3">
@@ -67,13 +84,22 @@ const Cart: React.FC<Props> = ({ baseURL }) => {
                 <input
                   size={1}
                   className="p-0 h-25 border-bottom border-top-0 border-left-0 border-right-0"
+                  type="number"
+                  min={1}
                   value={cartItem.quantity}
-                  readOnly
+                  onChange={(e) => updateQuantity(cartItem.id, Number(e.target.value))}
                 />
               </p>
               <p id="item-total-price" className="mb-0">
                 Total : <span className="font-weight-bold"> $ {cartItem.product.price * cartItem.quantity}</span>
               </p>
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-danger mt-2"
+                onClick={() => removeItem(cartItem.id)}
+              >
+                Remove
+              </button>
             </div>
           </div>
           <div className="col-2" />
@@ -85,7 +111,7 @@ const Cart: React.FC<Props> = ({ baseURL }) => {
 
       <div className="total-cost pt-2 text-right">
         <h5>Total : $ {totalCost}</h5>
-        <button disabled={isDisabled()} type="button" className="btn btn-primary confirm" onClick={checkout}>
+        <button disabled={isDisabled()} type="button" className="btn btn-primary confirm" onClick={() => navigate('/checkout')}>
           Confirm Order
         </button>
       </div>

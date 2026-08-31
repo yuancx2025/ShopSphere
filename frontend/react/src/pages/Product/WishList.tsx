@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import ProductBox from '../../components/Product/ProductBox';
 import { Product } from '../../types';
+import { authHeaders } from '../../utils/auth';
 
 interface Props {
   baseURL: string;
@@ -18,7 +19,7 @@ const WishList: React.FC<Props> = ({ baseURL }) => {
   useEffect(() => {
     if (!token) return;
     axios
-      .get<Product[]>(`${baseURL}wishlist/${token}`)
+      .get<Product[]>(`${baseURL}wishlist/`, { headers: authHeaders() })
       .then((res) => setProducts(res.data))
       .catch((err) => console.error(err));
   }, [baseURL, token]);

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import swal from 'sweetalert';
 import { Category, Product } from '../../types';
+import { authHeaders } from '../../utils/auth';
 
 interface Props {
   baseURL: string;
@@ -49,7 +50,7 @@ const EditProduct: React.FC<Props> = ({ baseURL, products, categories, fetchData
 
     try {
       await axios.post(`${baseURL}product/update/${id}`, updatedProduct, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
       });
       await fetchData();
       navigate('/admin/product');

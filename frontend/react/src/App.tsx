@@ -2,11 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import axios from 'axios';
 
-// Layout Components
 import { Navbar } from './components/layout/Navbar';
 import { Footer } from './components/layout/Footer';
+import { RequireAdmin, RequireAuth } from './components/auth/RouteGuards';
 
-// Page Components
 import Home from './pages/Home';
 import CategoryPage from './pages/Category/CategoryPage';
 import AddCategory from './pages/Category/AddCategory';
@@ -25,13 +24,10 @@ import PaymentFailed from './pages/payment/Failed';
 import OrderHistory from './pages/order/OrderHistory';
 import OrderDetails from './pages/order/OrderDetails';
 
-// Types
 import { Category, Product } from './types';
-// Utils
 import { API_BASE_URL } from './utils/constants';
 
 const baseURL = API_BASE_URL;
-// const baseURL = 'http://localhost:8080/';
 
 const App: React.FC = () => {
   const [products, setProducts] = useState<Product[] | null>(null);
@@ -69,51 +65,130 @@ const App: React.FC = () => {
           />
           <Route
             path="/admin/category/add"
-            element={<AddCategory baseURL={baseURL} fetchData={fetchData} />}
+            element={
+              <RequireAdmin>
+                <AddCategory baseURL={baseURL} fetchData={fetchData} />
+              </RequireAdmin>
+            }
           />
           <Route
             path="/admin/category"
-            element={<CategoryPage categories={categories} loading={loading} />}
+            element={
+              <RequireAdmin>
+                <CategoryPage categories={categories} loading={loading} />
+              </RequireAdmin>
+            }
           />
           <Route
             path="/admin/category/:id"
-            element={<EditCategory baseURL={baseURL} categories={categories} fetchData={fetchData} loading={loading} />}
+            element={
+              <RequireAdmin>
+                <EditCategory
+                  baseURL={baseURL}
+                  categories={categories}
+                  fetchData={fetchData}
+                  loading={loading}
+                />
+              </RequireAdmin>
+            }
           />
           <Route
             path="/admin/product/add"
-            element={<AddProduct baseURL={baseURL} categories={categories} fetchData={fetchData} loading={loading} />}
+            element={
+              <RequireAdmin>
+                <AddProduct
+                  baseURL={baseURL}
+                  categories={categories}
+                  fetchData={fetchData}
+                  loading={loading}
+                />
+              </RequireAdmin>
+            }
           />
           <Route
             path="/admin/product"
-            element={<ProductPage products={products} loading={loading} />}
+            element={
+              <RequireAdmin>
+                <ProductPage products={products} loading={loading} />
+              </RequireAdmin>
+            }
           />
           <Route
             path="/admin/product/:id"
             element={
-              <EditProduct
-                baseURL={baseURL}
-                products={products}
-                categories={categories}
-                fetchData={fetchData}
-                loading={loading}
-              />
+              <RequireAdmin>
+                <EditProduct
+                  baseURL={baseURL}
+                  products={products}
+                  categories={categories}
+                  fetchData={fetchData}
+                  loading={loading}
+                />
+              </RequireAdmin>
             }
           />
           <Route
             path="/product/show/:id"
             element={
-              <ShowDetails baseURL={baseURL} products={products} categories={categories} loading={loading} />
+              <ShowDetails
+                baseURL={baseURL}
+                products={products}
+                categories={categories}
+                loading={loading}
+              />
             }
           />
           <Route path="/signup" element={<Signup baseURL={baseURL} />} />
           <Route path="/signin" element={<Signin baseURL={baseURL} />} />
-          <Route path="/wishlist" element={<WishList baseURL={baseURL} />} />
-          <Route path="/cart" element={<Cart baseURL={baseURL} />} />
-          <Route path="/checkout" element={<Checkout baseURL={baseURL} />} />
-          <Route path="/payment/success" element={<PaymentSuccess baseURL={baseURL} />} />
+          <Route
+            path="/wishlist"
+            element={
+              <RequireAuth>
+                <WishList baseURL={baseURL} />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/cart"
+            element={
+              <RequireAuth>
+                <Cart baseURL={baseURL} />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/checkout"
+            element={
+              <RequireAuth>
+                <Checkout baseURL={baseURL} />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/payment/success"
+            element={
+              <RequireAuth>
+                <PaymentSuccess baseURL={baseURL} />
+              </RequireAuth>
+            }
+          />
           <Route path="/payment/failed" element={<PaymentFailed />} />
-          <Route path="/orders" element={<OrderHistory baseURL={baseURL} />} />
-          <Route path="/order/:id" element={<OrderDetails baseURL={baseURL} />} />
+          <Route
+            path="/orders"
+            element={
+              <RequireAuth>
+                <OrderHistory baseURL={baseURL} />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/order/:id"
+            element={
+              <RequireAuth>
+                <OrderDetails baseURL={baseURL} />
+              </RequireAuth>
+            }
+          />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>

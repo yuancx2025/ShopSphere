@@ -2,6 +2,7 @@ package ecommerce.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
@@ -21,6 +22,8 @@ public class Product {
     private Integer id;
 
     private @NotNull String name;
+
+    @Column(name = "image_url")
     private @NotNull String imageURL;
     private @NotNull double price;
     private @NotNull String description;

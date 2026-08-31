@@ -1,109 +1,82 @@
--- Initial Database Schema Migration
--- Version: V1__Initial_Schema.sql
--- Description: Creates the initial database schema for the e-commerce application
+-- Flyway V1: schema owned by SQL, table names match JPA @Table annotations.
+-- Hibernate ddl-auto=validate checks these columns exist; it does not create them.
 
--- Create category table
-CREATE TABLE IF NOT EXISTS category (
+CREATE TABLE categories (
     id INT AUTO_INCREMENT PRIMARY KEY,
     category_name VARCHAR(255) NOT NULL,
-    description TEXT,
-    image_url VARCHAR(500),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    description VARCHAR(255) NOT NULL,
+    image_url VARCHAR(255) NOT NULL
 );
 
--- Create user table
-CREATE TABLE IF NOT EXISTS user (
+CREATE TABLE users (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    email VARCHAR(255) NOT NULL UNIQUE,
+    first_name VARCHAR(255),
+    last_name VARCHAR(255),
+    email VARCHAR(255) NOT NULL,
     password VARCHAR(255) NOT NULL,
-    role VARCHAR(50) DEFAULT 'USER',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    role VARCHAR(50) NOT NULL DEFAULT 'USER',
+    CONSTRAINT uk_users_email UNIQUE (email),
     INDEX idx_user_email (email)
 );
 
--- Create product table
-CREATE TABLE IF NOT EXISTS product (
+CREATE TABLE products (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    description TEXT,
-    image_url VARCHAR(500),
-    price DECIMAL(10, 2) NOT NULL,
-    category_id INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (category_id) REFERENCES category(id) ON DELETE SET NULL,
+    image_url VARCHAR(255) NOT NULL,
+    price DOUBLE NOT NULL,
+    description VARCHAR(255) NOT NULL,
+    category_id INT NOT NULL,
+    CONSTRAINT fk_products_category FOREIGN KEY (category_id) REFERENCES categories(id),
     INDEX idx_product_category (category_id),
     INDEX idx_product_name (name)
 );
 
--- Create authentication_token table
-CREATE TABLE IF NOT EXISTS authentication_token (
+CREATE TABLE cart (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    token VARCHAR(255) NOT NULL UNIQUE,
-    user_id INT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
-    INDEX idx_token (token)
-);
-
--- Create cart table
-CREATE TABLE IF NOT EXISTS cart (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
+    created_date DATETIME(6),
     product_id INT NOT NULL,
-    quantity INT NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE,
+    user_id INT NOT NULL,
+    quantity INT NOT NULL,
+    CONSTRAINT fk_cart_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    CONSTRAINT fk_cart_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT unique_cart_item UNIQUE (user_id, product_id),
     INDEX idx_cart_user (user_id)
 );
 
--- Create wishlist table
-CREATE TABLE IF NOT EXISTS wishlist (
+CREATE TABLE wishlist (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
-    product_id INT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE,
-    UNIQUE KEY unique_wishlist_item (user_id, product_id),
+    created_date DATETIME(6),
+    product_id INT,
+    CONSTRAINT fk_wishlist_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_wishlist_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    CONSTRAINT unique_wishlist_item UNIQUE (user_id, product_id),
     INDEX idx_wishlist_user (user_id)
 );
 
--- Create order table
-CREATE TABLE IF NOT EXISTS orders (
+CREATE TABLE orders (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    total_price DECIMAL(10, 2) NOT NULL,
+    created_date DATETIME(6),
+    total_price DOUBLE,
     session_id VARCHAR(255),
-    status VARCHAR(50) DEFAULT 'PENDING',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
-    INDEX idx_order_user (user_id),
-    INDEX idx_order_status (status)
+    user_id INT,
+    CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_order_user (user_id)
 );
 
--- Create order_item table
-CREATE TABLE IF NOT EXISTS order_item (
+CREATE TABLE orderitems (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    order_id INT NOT NULL,
-    product_id INT NOT NULL,
     quantity INT NOT NULL,
-    price DECIMAL(10, 2) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE SET NULL,
+    price DOUBLE NOT NULL,
+    created_date DATETIME(6),
+    order_id INT,
+    product_id INT,
+    CONSTRAINT fk_orderitems_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+    CONSTRAINT fk_orderitems_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
     INDEX idx_order_item_order (order_id)
 );
 
--- Insert sample categories
-INSERT INTO category (category_name, description, image_url) VALUES
+INSERT INTO categories (category_name, description, image_url) VALUES
 ('Electronics', 'Electronic devices and accessories', 'https://images.unsplash.com/photo-1498049794561-7780e7231661?w=300'),
 ('Clothing', 'Fashion and apparel', 'https://images.unsplash.com/photo-1445205170230-053b83016050?w=300'),
 ('Books', 'Books and publications', 'https://images.unsplash.com/photo-1495446815901-a7297e633e8d?w=300'),

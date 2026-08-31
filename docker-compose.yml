@@ -15,7 +15,6 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./backend/src/main/resources/db/migrations:/docker-entrypoint-initdb.d
     networks:
       - ecommerce-network
     healthcheck:
@@ -41,6 +40,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: ecommerce
       BASE_URL: http://localhost:8080/
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_your_stripe_key}
+      JWT_SECRET: ${JWT_SECRET:-ShopSphereDevSecretKeyMustBeAtLeast256BitsLongForHS256!!}
     ports:
       - "8080:8080"
     networks:
@@ -49,8 +49,10 @@ services:
   # React Frontend
   frontend:
     build:
-      context: ./frontend
+      context: ./frontend/react
       dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080/}
     container_name: ecommerce-frontend
     restart: unless-stopped
     depends_on:

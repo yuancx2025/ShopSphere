@@ -7,6 +7,7 @@ import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import ecommerce.dto.product.ProductDto;
 import ecommerce.exceptions.ProductNotExistException;
@@ -52,6 +53,7 @@ public class ProductService {
     }
 
 
+    @Transactional(readOnly = true)
     public Product getProductById(Integer productId) throws ProductNotExistException {
         Optional<Product> optionalProduct = productRepository.findById(productId);
         if (!optionalProduct.isPresent())

@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import swal from 'sweetalert';
 import { Category, Product } from '../../types';
+import { authHeaders } from '../../utils/auth';
 import './ShowDetails.css';
 
 declare global {
@@ -41,7 +42,7 @@ const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }
 
   const addToWishList = async (productId: number) => {
     try {
-      await axios.post(`${baseURL}wishlist/add?token=${token}`, { id: productId });
+      await axios.post(`${baseURL}wishlist/add`, { id: productId }, { headers: authHeaders() });
       swal({ text: 'Added to WishList. Please continue', icon: 'success' });
     } catch (error) {
       console.error(error);
@@ -51,10 +52,11 @@ const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }
 
   const addToCart = async (productId: number) => {
     try {
-      await axios.post(`${baseURL}cart/add?token=${token}`, {
-        productId,
-        quantity,
-      });
+      await axios.post(
+        `${baseURL}cart/add`,
+        { productId, quantity },
+        { headers: authHeaders() }
+      );
       swal({ text: 'Product Added to the cart!', icon: 'success', closeOnClickOutside: false });
     } catch (error) {
       console.error(error);

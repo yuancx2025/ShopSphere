@@ -4,6 +4,7 @@ package ecommerce.controllers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import ecommerce.common.ApiResponse;
 import ecommerce.dto.product.ProductDto;
+import ecommerce.exceptions.ProductNotExistException;
 import ecommerce.model.Category;
 import ecommerce.service.CategoryService;
 import ecommerce.service.ProductService;
@@ -35,7 +37,14 @@ public class ProductController {
         return new ResponseEntity<>(body, HttpStatus.OK);
     }
 
+    @GetMapping("/{productID}")
+    public ResponseEntity<ProductDto> getProduct(@PathVariable("productID") Integer productID)
+            throws ProductNotExistException {
+        return new ResponseEntity<>(new ProductDto(productService.getProductById(productID)), HttpStatus.OK);
+    }
+
     @PostMapping("/add")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse> addProduct(@RequestBody ProductDto productDto) {
         Optional<Category> optionalCategory = categoryService.readCategory(productDto.getCategoryId());
         if (!optionalCategory.isPresent()) {
@@ -47,6 +56,7 @@ public class ProductController {
     }
 
     @PostMapping("/update/{productID}")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse> updateProduct(@PathVariable("productID") Integer productID, @RequestBody @Valid ProductDto productDto) {
         Optional<Category> optionalCategory = categoryService.readCategory(productDto.getCategoryId());
         if (!optionalCategory.isPresent()) {

@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import swal from 'sweetalert';
 import { Category } from '../../types';
+import { authHeaders } from '../../utils/auth';
 
 interface Props {
   baseURL: string;
@@ -41,7 +42,7 @@ const EditCategory: React.FC<Props> = ({ baseURL, categories, fetchData, loading
 
     try {
       await axios.post(`${baseURL}category/update/${id}`, updatedCategory, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
       });
       await fetchData();
       swal({

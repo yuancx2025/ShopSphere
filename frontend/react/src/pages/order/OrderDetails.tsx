@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import { Order, OrderItem } from '../../types';
+import { authHeaders } from '../../utils/auth';
 
 interface Props {
   baseURL: string;
@@ -20,7 +21,7 @@ const OrderDetails: React.FC<Props> = ({ baseURL }) => {
   useEffect(() => {
     if (!token || !id) return;
     axios
-      .get<Order>(`${baseURL}order/${id}?token=${token}`)
+      .get<Order>(`${baseURL}order/${id}`, { headers: authHeaders() })
       .then((response) => {
         if (response.status === 200) {
           setOrder(response.data);

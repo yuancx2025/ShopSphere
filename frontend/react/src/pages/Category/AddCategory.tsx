@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import swal from 'sweetalert';
+import { authHeaders } from '../../utils/auth';
 
 interface Props {
   baseURL: string;
@@ -21,7 +22,7 @@ const AddCategory: React.FC<Props> = ({ baseURL, fetchData }) => {
 
     try {
       await axios.post(`${baseURL}category/create`, newCategory, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
       });
       await fetchData();
       swal({

@@ -49,7 +49,7 @@ A full-stack e-commerce platform with comprehensive product management, shopping
 e-commerce/
 ├── backend/                    # Spring Boot REST API
 │   ├── src/main/java/
-│   │   └── com/educative/ecommerce/
+│   │   └── EcommerceApplication.java   # App entry point
 │   │       ├── controllers/    # REST endpoints
 │   │       ├── service/        # Business logic
 │   │       ├── model/          # JPA entities

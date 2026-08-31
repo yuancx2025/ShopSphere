@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { Order } from '../../types';
+import { authHeaders } from '../../utils/auth';
 
 interface Props {
   baseURL: string;
@@ -26,7 +27,7 @@ const OrderHistory: React.FC<Props> = ({ baseURL }) => {
   useEffect(() => {
     if (!token) return;
     axios
-      .get<Order[]>(`${baseURL}order/?token=${token}`)
+      .get<Order[]>(`${baseURL}order/`, { headers: authHeaders() })
       .then((response) => {
         if (response.status === 200) {
           const list: DisplayOrder[] = response.data.map((order) => ({

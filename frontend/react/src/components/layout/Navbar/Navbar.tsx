@@ -1,21 +1,41 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import axios from 'axios';
 import swal from 'sweetalert';
-import logo from '../../assets/icon.png';
+import logo from '../../../assets/icon.png';
+import { API_BASE_URL } from '../../../utils/constants';
+import { authHeaders, isAdminUser } from '../../../utils/auth';
 import './Navbar.css';
 
 const Navbar: React.FC = () => {
   const [token, setToken] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    setToken(localStorage.getItem('token'));
+    const stored = localStorage.getItem('token');
+    setToken(stored);
+    setIsAdmin(isAdminUser());
+    if (!stored) {
+      return;
+    }
+    axios
+      .get(`${API_BASE_URL}user/me`, { headers: authHeaders() })
+      .then((res) => {
+        localStorage.setItem('user', JSON.stringify(res.data));
+        setIsAdmin(res.data.role === 'ADMIN');
+      })
+      .catch(() => {
+        setIsAdmin(false);
+      });
   }, [location.pathname]);
 
   const signout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('user');
     setToken(null);
+    setIsAdmin(false);
     navigate('/');
     swal({
       text: 'Logged you out. Visit Again',
@@ -69,27 +89,29 @@ const Navbar: React.FC = () => {
           </div>
         </form>
 
-        <li className="nav-item dropdown list-unstyled">
-          <a
-            className="nav-link text-light dropdown-toggle"
-            href="#"
-            id="navbarDropdownAdmin"
-            role="button"
-            data-toggle="dropdown"
-            aria-haspopup="true"
-            aria-expanded="false"
-          >
-            Admin
-          </a>
-          <div className="dropdown-menu" aria-labelledby="navbarDropdownAdmin">
-            <Link className="dropdown-item" to="/admin/category">
-              Category
-            </Link>
-            <Link className="dropdown-item" to="/admin/product">
-              Products
-            </Link>
-          </div>
-        </li>
+        {isAdmin && (
+          <li className="nav-item dropdown list-unstyled">
+            <a
+              className="nav-link text-light dropdown-toggle"
+              href="#"
+              id="navbarDropdownAdmin"
+              role="button"
+              data-toggle="dropdown"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              Admin
+            </a>
+            <div className="dropdown-menu" aria-labelledby="navbarDropdownAdmin">
+              <Link className="dropdown-item" to="/admin/category">
+                Category
+              </Link>
+              <Link className="dropdown-item" to="/admin/product">
+                Products
+              </Link>
+            </div>
+          </li>
+        )}
 
         <li className="nav-item dropdown list-unstyled">
           <a
