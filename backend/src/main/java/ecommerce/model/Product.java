@@ -27,6 +27,7 @@ public class Product {
     private @NotNull String imageURL;
     private @NotNull double price;
     private @NotNull String description;
+    private @NotNull int stock;
 
     @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
@@ -35,12 +36,17 @@ public class Product {
 
 
     public Product(String name, String imageURL, double price, String description, Category category) {
+        this(name, imageURL, price, description, category, 0);
+    }
+
+    public Product(String name, String imageURL, double price, String description, Category category, int stock) {
         super();
         this.name = name;
         this.imageURL = imageURL;
         this.price = price;
         this.description = description;
         this.category = category;
+        this.stock = stock;
     }
 
     public Product() {
@@ -92,6 +98,14 @@ public class Product {
 
     public void setCategory(Category category) {
         this.category = category;
+    }
+
+    public int getStock() {
+        return stock;
+    }
+
+    public void setStock(int stock) {
+        this.stock = stock;
     }
 
     @Override

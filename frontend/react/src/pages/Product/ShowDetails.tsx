@@ -51,6 +51,10 @@ const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }
   };
 
   const addToCart = async (productId: number) => {
+    if (product && product.stock <= 0) {
+      swal({ text: 'This product is out of stock', icon: 'error', closeOnClickOutside: false });
+      return;
+    }
     try {
       await axios.post(
         `${baseURL}cart/add`,
@@ -60,7 +64,12 @@ const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }
       swal({ text: 'Product Added to the cart!', icon: 'success', closeOnClickOutside: false });
     } catch (error) {
       console.error(error);
-      swal({ text: 'Something wrong with add to cart', icon: 'error', closeOnClickOutside: false });
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      const data = axios.isAxiosError(error) ? error.response?.data : undefined;
+      const message = status === 409
+        ? (typeof data === 'string' ? data : 'Not enough stock')
+        : 'Something wrong with add to cart';
+      swal({ text: message, icon: 'error', closeOnClickOutside: false });
     }
   };
 
@@ -76,6 +85,12 @@ const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }
         <div className="col-md-6 col-12 pt-3 pt-md-0">
           <h4>{product.name}</h4>
           <h6 className="category font-italic">{category.categoryName}</h6>
+          <p>
+            <span className="font-weight-bold">Price: </span>${product.price}
+            <br />
+            <span className="font-weight-bold">Stock: </span>
+            {product.stock > 0 ? product.stock : 'Out of stock'}
+          </p>
           <p>
             <span className="font-weight-bold">Description: -</span> <br />
             {product.description}
@@ -93,6 +108,7 @@ const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }
                 type="number"
                 value={quantity}
                 min={1}
+                max={Math.max(product.stock, 1)}
                 onChange={(e) => setQuantity(Number(e.target.value))}
               />
             </div>
@@ -109,6 +125,7 @@ const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }
               type="button"
               id="add-to-cart-button"
               className="btn"
+              disabled={product.stock <= 0}
               onClick={() => product && addToCart(product.id)}
             >
               Add to Cart

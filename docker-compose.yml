@@ -38,8 +38,9 @@ services:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ecommerce_v2
       SPRING_DATASOURCE_USERNAME: ecommerce
       SPRING_DATASOURCE_PASSWORD: ecommerce
-      BASE_URL: http://localhost:8080/
+      BASE_URL: http://localhost:3000/
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_your_stripe_key}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       JWT_SECRET: ${JWT_SECRET:-ShopSphereDevSecretKeyMustBeAtLeast256BitsLongForHS256!!}
     ports:
       - "8080:8080"

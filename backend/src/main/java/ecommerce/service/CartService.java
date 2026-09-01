@@ -11,6 +11,7 @@ import ecommerce.dto.cart.AddToCartDto;
 import ecommerce.dto.cart.CartDto;
 import ecommerce.dto.cart.CartItemDto;
 import ecommerce.exceptions.CustomException;
+import ecommerce.exceptions.InsufficientStockException;
 import ecommerce.model.Cart;
 import ecommerce.model.Product;
 import ecommerce.model.User;
@@ -27,14 +28,17 @@ public class CartService {
 
     @Transactional
     public void addToCart(AddToCartDto addToCartDto, Product product, User user) {
+        int requested = addToCartDto.getQuantity() == null ? 0 : addToCartDto.getQuantity();
         Optional<Cart> existing = cartRepository.findByUserAndProduct(user, product);
+        int newQuantity = existing.map(cart -> cart.getQuantity() + requested).orElse(requested);
+        assertQuantityAvailable(product, newQuantity);
         if (existing.isPresent()) {
             Cart cart = existing.get();
-            cart.setQuantity(cart.getQuantity() + addToCartDto.getQuantity());
+            cart.setQuantity(newQuantity);
             cartRepository.save(cart);
             return;
         }
-        cartRepository.save(new Cart(product, addToCartDto.getQuantity(), user));
+        cartRepository.save(new Cart(product, requested, user));
     }
 
     public CartDto listCartItems(User user) {
@@ -58,6 +62,7 @@ public class CartService {
         if (quantity == null || quantity < 1) {
             throw new CustomException("Quantity must be at least 1");
         }
+        assertQuantityAvailable(cart.getProduct(), quantity);
         cart.setQuantity(quantity);
         cartRepository.save(cart);
     }
@@ -72,5 +77,11 @@ public class CartService {
     @Transactional
     public void deleteUserCartItems(User user) {
         cartRepository.deleteByUser(user);
+    }
+
+    private void assertQuantityAvailable(Product product, int quantity) {
+        if (quantity > product.getStock()) {
+            throw new InsufficientStockException("Not enough stock for " + product.getName());
+        }
     }
 }

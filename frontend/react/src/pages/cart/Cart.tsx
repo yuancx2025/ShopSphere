@@ -36,12 +36,20 @@ const Cart: React.FC<Props> = ({ baseURL }) => {
     loadCart();
   }, [token, loadCart]);
 
-  const updateQuantity = (cartItemId: number | undefined, quantity: number) => {
+  const updateQuantity = (cartItemId: number | undefined, quantity: number, maxStock: number) => {
     if (!cartItemId || quantity < 1) return;
+    if (quantity > maxStock) {
+      return;
+    }
     axios
       .put(`${baseURL}cart/update/${cartItemId}`, { quantity }, { headers: authHeaders() })
       .then(() => loadCart())
-      .catch((error) => console.error(error));
+      .catch((error) => {
+        console.error(error);
+        if (error.response?.status === 409) {
+          loadCart();
+        }
+      });
   };
 
   const removeItem = (cartItemId: number | undefined) => {
@@ -86,8 +94,9 @@ const Cart: React.FC<Props> = ({ baseURL }) => {
                   className="p-0 h-25 border-bottom border-top-0 border-left-0 border-right-0"
                   type="number"
                   min={1}
+                  max={cartItem.product.stock}
                   value={cartItem.quantity}
-                  onChange={(e) => updateQuantity(cartItem.id, Number(e.target.value))}
+                  onChange={(e) => updateQuantity(cartItem.id, Number(e.target.value), cartItem.product.stock)}
                 />
               </p>
               <p id="item-total-price" className="mb-0">

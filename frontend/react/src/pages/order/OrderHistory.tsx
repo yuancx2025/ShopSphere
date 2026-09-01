@@ -14,6 +14,7 @@ interface DisplayOrder {
   orderdate: string;
   imageURL: string;
   totalItems: number;
+  status: string;
 }
 
 const OrderHistory: React.FC<Props> = ({ baseURL }) => {
@@ -34,8 +35,9 @@ const OrderHistory: React.FC<Props> = ({ baseURL }) => {
             id: order.id,
             totalCost: order.totalPrice,
             orderdate: order.createdDate.substring(0, 10),
-            imageURL: order.orderItems[0]?.product.imageURL,
+            imageURL: order.orderItems[0]?.imageURL || order.orderItems[0]?.product?.imageURL || '',
             totalItems: order.orderItems.length,
+            status: order.status,
           }));
           setOrderList(list);
         }
@@ -67,6 +69,7 @@ const OrderHistory: React.FC<Props> = ({ baseURL }) => {
               <p className="mb-0">
                 {order.totalItems} item{order.totalItems > 1 ? 's' : ''}
               </p>
+              <p className="mb-0 text-uppercase">{order.status}</p>
               <p id="item-price" className="mb-0 font-weight-bold">
                 Total Cost : $ {order.totalCost}
               </p>

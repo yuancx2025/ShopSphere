@@ -9,11 +9,16 @@ import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 
 @ControllerAdvice
-public class ExceptionControllerAdvice {
+public class GlobalExceptionHandler {
 
     @ExceptionHandler(value = CustomException.class)
     public final ResponseEntity<String> handleCustomException(CustomException exception) {
         return new ResponseEntity<>(exception.getMessage(), HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(value = InsufficientStockException.class)
+    public final ResponseEntity<String> handleInsufficientStockException(InsufficientStockException exception) {
+        return new ResponseEntity<>(exception.getMessage(), HttpStatus.CONFLICT);
     }
 
     @ExceptionHandler(value = ProductNotExistException.class)
@@ -23,7 +28,7 @@ public class ExceptionControllerAdvice {
 
     @ExceptionHandler(value = OrderNotFoundException.class)
     public final ResponseEntity<String> handleOrderNotFoundException(OrderNotFoundException exception) {
-        return new ResponseEntity<>(exception.getMessage(), HttpStatus.BAD_REQUEST);
+        return new ResponseEntity<>(exception.getMessage(), HttpStatus.NOT_FOUND);
     }
 
     @ExceptionHandler(value = AuthenticationFailException.class)

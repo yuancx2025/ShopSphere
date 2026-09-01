@@ -43,7 +43,7 @@ public class CartController {
     }
 
     @PostMapping("/add")
-    public ResponseEntity<ApiResponse> addToCart(@RequestBody AddToCartDto addToCartDto)
+    public ResponseEntity<ApiResponse> addToCart(@Valid @RequestBody AddToCartDto addToCartDto)
             throws ProductNotExistException, AuthenticationFailException {
         User user = currentUserService.requireCurrentUser();
         Product product = productService.getProductById(addToCartDto.getProductId());

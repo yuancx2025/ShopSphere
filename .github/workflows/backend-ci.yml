@@ -60,6 +60,7 @@ jobs:
         SPRING_DATASOURCE_USERNAME: root
         SPRING_DATASOURCE_PASSWORD: root
         STRIPE_SECRET_KEY: sk_test_dummy_key
+        STRIPE_WEBHOOK_SECRET: whsec_dummy
         JWT_SECRET: ShopSphereDevSecretKeyMustBeAtLeast256BitsLongForHS256!!
       run: ./mvnw test
 

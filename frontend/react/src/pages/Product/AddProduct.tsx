@@ -17,6 +17,7 @@ const AddProduct: React.FC<Props> = ({ baseURL, categories, fetchData, loading }
   const [description, setDescription] = useState('');
   const [imageURL, setImageURL] = useState('');
   const [price, setPrice] = useState<number | undefined>();
+  const [stock, setStock] = useState<number>(0);
 
   const addProduct = async () => {
     if (!categoryId || !price) return;
@@ -26,6 +27,7 @@ const AddProduct: React.FC<Props> = ({ baseURL, categories, fetchData, loading }
       description,
       imageURL,
       price,
+      stock,
     };
 
     try {
@@ -42,6 +44,7 @@ const AddProduct: React.FC<Props> = ({ baseURL, categories, fetchData, loading }
       setDescription('');
       setImageURL('');
       setPrice(undefined);
+      setStock(0);
     } catch (err) {
       console.error(err);
       swal({
@@ -121,6 +124,17 @@ const AddProduct: React.FC<Props> = ({ baseURL, categories, fetchData, loading }
                 className="form-control"
                 value={price ?? ''}
                 onChange={(e) => setPrice(Number(e.target.value))}
+                required
+              />
+            </div>
+            <div className="form-group">
+              <label>Stock</label>
+              <input
+                type="number"
+                className="form-control"
+                min={0}
+                value={stock}
+                onChange={(e) => setStock(Number(e.target.value))}
                 required
               />
             </div>

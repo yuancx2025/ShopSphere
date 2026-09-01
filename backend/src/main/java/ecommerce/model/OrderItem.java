@@ -28,6 +28,9 @@ public class OrderItem {
     @Column(name = "price")
     private @NotNull double price;
 
+    @Column(name = "product_name")
+    private @NotNull String productName;
+
     @Column(name = "created_date")
     private Date createdDate;
 
@@ -46,7 +49,8 @@ public class OrderItem {
         this.product = product;
         this.quantity = quantity;
         this.price = price;
-        this.order= order;
+        this.productName = product.getName();
+        this.order = order;
         this.createdDate = new Date();
     }
 
@@ -73,6 +77,14 @@ public class OrderItem {
 
     public void setPrice(double price) {
         this.price = price;
+    }
+
+    public String getProductName() {
+        return productName;
+    }
+
+    public void setProductName(String productName) {
+        this.productName = productName;
     }
 
     public Date getCreatedDate() {

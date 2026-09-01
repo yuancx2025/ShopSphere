@@ -37,6 +37,7 @@ public class ProductService {
         product.setImageURL(productDto.getImageURL());
         product.setPrice(productDto.getPrice());
         product.setName(productDto.getName());
+        product.setStock(productDto.getStock() == null ? 0 : productDto.getStock());
         return product;
     }
 

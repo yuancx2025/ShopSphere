@@ -13,7 +13,10 @@ export interface Product {
   description: string;
   imageURL: string;
   price: number;
+  stock: number;
 }
+
+export type OrderStatus = 'PENDING' | 'PAID' | 'CANCELLED' | 'FAILED';
 
 export interface CartItem {
   id?: number;
@@ -27,14 +30,24 @@ export interface CartResponse {
 }
 
 export interface OrderItem {
-  product: Product;
+  productId?: number;
+  productName: string;
+  imageURL?: string;
   quantity: number;
   price: number;
+  product?: Product;
 }
 
 export interface Order {
   id: number;
   totalPrice: number;
   createdDate: string;
+  sessionId?: string;
+  status: OrderStatus;
   orderItems: OrderItem[];
+}
+
+export interface CheckoutSession {
+  sessionId: string;
+  url: string;
 }

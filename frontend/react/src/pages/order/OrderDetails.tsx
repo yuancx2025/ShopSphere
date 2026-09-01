@@ -39,6 +39,7 @@ const OrderDetails: React.FC<Props> = ({ baseURL }) => {
       <div className="row">
         <div className="col-12 text-center">
           <h4 className="pt-3">Order Id: {order.id}</h4>
+          <p className="text-uppercase">{order.status}</p>
         </div>
       </div>
 
@@ -46,14 +47,14 @@ const OrderDetails: React.FC<Props> = ({ baseURL }) => {
         <div key={index} className="row mt-2 pt-3 justify-content-around">
           <div className="col-1" />
           <div className="col-md-3 embed-responsive embed-responsive-16by9">
-            <img src={orderItem.product.imageURL} className="w-100 card-img-top embed-responsive-item" />
+            <img src={orderItem.imageURL || orderItem.product?.imageURL} className="w-100 card-img-top embed-responsive-item" />
             <hr />
           </div>
           <div className="col-md-5 px-3">
             <div className="card-block px-3">
-              <h6 className="card-title">{orderItem.product.name}</h6>
+              <h6 className="card-title">{orderItem.productName || orderItem.product?.name}</h6>
               <p id="item-price" className="mb-0 font-weight-bold">
-                ${orderItem.product.price} per unit
+                ${orderItem.price} per unit
               </p>
               <p id="item-quantity" className="mb-0">Quantity : {orderItem.quantity}</p>
               <p id="item-total-price" className="mb-0">

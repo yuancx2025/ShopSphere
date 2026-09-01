@@ -21,6 +21,7 @@ const EditProduct: React.FC<Props> = ({ baseURL, products, categories, fetchData
   const [description, setDescription] = useState('');
   const [imageURL, setImageURL] = useState('');
   const [price, setPrice] = useState<number | undefined>();
+  const [stock, setStock] = useState<number>(0);
 
   const currentProduct = useMemo(() => {
     if (!products || !id) return null;
@@ -34,6 +35,7 @@ const EditProduct: React.FC<Props> = ({ baseURL, products, categories, fetchData
       setDescription(currentProduct.description);
       setImageURL(currentProduct.imageURL);
       setPrice(currentProduct.price);
+      setStock(currentProduct.stock ?? 0);
     }
   }, [currentProduct]);
 
@@ -46,6 +48,7 @@ const EditProduct: React.FC<Props> = ({ baseURL, products, categories, fetchData
       description,
       imageURL,
       price,
+      stock,
     };
 
     try {
@@ -138,6 +141,17 @@ const EditProduct: React.FC<Props> = ({ baseURL, products, categories, fetchData
                 className="form-control"
                 value={price ?? ''}
                 onChange={(e) => setPrice(Number(e.target.value))}
+                required
+              />
+            </div>
+            <div className="form-group">
+              <label>Stock</label>
+              <input
+                type="number"
+                className="form-control"
+                min={0}
+                value={stock}
+                onChange={(e) => setStock(Number(e.target.value))}
                 required
               />
             </div>

@@ -2,6 +2,7 @@ package ecommerce.dto.product;
 
 
 import ecommerce.model.Product;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 public class ProductDto {
@@ -12,13 +13,21 @@ public class ProductDto {
     private @NotNull double price;
     private @NotNull String description;
     private @NotNull Integer categoryId;
+    private @NotNull @Min(0) Integer stock;
 
-    public ProductDto(@NotNull String name, @NotNull String imageURL, @NotNull double price, @NotNull String description, @NotNull Integer categoryId) {
+    public ProductDto(
+            @NotNull String name,
+            @NotNull String imageURL,
+            @NotNull double price,
+            @NotNull String description,
+            @NotNull Integer categoryId,
+            @NotNull Integer stock) {
         this.name = name;
         this.imageURL = imageURL;
         this.price = price;
         this.description = description;
         this.categoryId = categoryId;
+        this.stock = stock;
     }
 
     public ProductDto(Product product) {
@@ -28,6 +37,7 @@ public class ProductDto {
         this.setDescription(product.getDescription());
         this.setPrice(product.getPrice());
         this.setCategoryId(product.getCategory().getId());
+        this.setStock(product.getStock());
     }
 
     public ProductDto() {
@@ -79,5 +89,13 @@ public class ProductDto {
 
     public void setCategoryId(Integer categoryId) {
         this.categoryId = categoryId;
+    }
+
+    public Integer getStock() {
+        return stock;
+    }
+
+    public void setStock(Integer stock) {
+        this.stock = stock;
     }
 }

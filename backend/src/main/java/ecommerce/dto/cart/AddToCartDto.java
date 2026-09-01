@@ -1,11 +1,12 @@
 package ecommerce.dto.cart;
 
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 public class AddToCartDto {
     private Integer id;
     private @NotNull Integer productId;
-    private @NotNull Integer quantity;
+    private @NotNull @Min(1) Integer quantity;
 
 
     public AddToCartDto() {

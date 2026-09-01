@@ -1,68 +1,59 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { CartItem, CartResponse } from '../../types';
+import { CartResponse, CheckoutSession } from '../../types';
 import { authHeaders } from '../../utils/auth';
 import './Checkout.css';
-
-declare global {
-  interface Window {
-    Stripe: any;
-  }
-}
 
 interface Props {
   baseURL: string;
 }
 
 const Checkout: React.FC<Props> = ({ baseURL }) => {
-  const [stripeAPIToken] = useState('<Stripe public key>');
-  const [stripe, setStripe] = useState<any>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [checkoutBodyArray, setCheckoutBodyArray] = useState<any[]>([]);
+  const [cartEmpty, setCartEmpty] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setToken(localStorage.getItem('token'));
   }, []);
 
   useEffect(() => {
-    const includeStripe = (url: string, callback: () => void) => {
-      const tag = document.createElement('script');
-      tag.src = `//${url}`;
-      tag.addEventListener('load', callback, false);
-      document.body.appendChild(tag);
-    };
-
-    includeStripe('js.stripe.com/v3/', () => {
-      if (window.Stripe) setStripe(window.Stripe(stripeAPIToken));
-    });
-  }, [stripeAPIToken]);
-
-  useEffect(() => {
     if (!token) return;
     axios
       .get<CartResponse>(`${baseURL}cart/`, { headers: authHeaders() })
       .then((response) => {
-        const items: CartItem[] = response.data.cartItems;
-        const body = items.map((item) => ({
-          productName: item.product.name,
-          quantity: item.quantity,
-          price: item.product.price,
-          productId: item.product.id,
-        }));
-        setCheckoutBodyArray(body);
+        setCartEmpty(!response.data.cartItems || response.data.cartItems.length === 0);
       })
       .catch((err) => console.error(err));
   }, [baseURL, token]);
 
   const goToCheckout = () => {
-    if (!stripe || checkoutBodyArray.length === 0) return;
+    if (cartEmpty || submitting) return;
+    setSubmitting(true);
+    setError(null);
     axios
-      .post(`${baseURL}order/create-checkout-session`, checkoutBodyArray, { headers: authHeaders() })
+      .post<CheckoutSession>(`${baseURL}order/create-checkout-session`, null, { headers: authHeaders() })
       .then((response) => {
-        localStorage.setItem('sessionId', response.data.sessionId);
-        return response.data;
+        if (response.data.url) {
+          window.location.href = response.data.url;
+          return;
+        }
+        setError('Unable to start payment. Please try again.');
+        setSubmitting(false);
       })
-      .then((session) => stripe.redirectToCheckout({ sessionId: session.sessionId }));
+      .catch((err) => {
+        const status = err.response?.status;
+        const message = err.response?.data;
+        if (status === 409) {
+          setError(typeof message === 'string' ? message : 'Not enough stock for one or more items.');
+        } else if (status === 400 && typeof message === 'string') {
+          setError(message);
+        } else {
+          setError('Unable to start payment. Please try again.');
+        }
+        setSubmitting(false);
+      });
   };
 
   if (!token) return <div className="text-center p-5">Please sign in to checkout.</div>;
@@ -76,13 +67,19 @@ const Checkout: React.FC<Props> = ({ baseURL }) => {
           While making payment use card number 4242 4242 4242 4242 and enter random cvv(3 digit)
         </div>
 
+        {error && (
+          <div className="alert alert-danger" role="alert">
+            {error}
+          </div>
+        )}
+
         <button
           className="btn checkout_button"
           id="proceed-to-checkout"
           onClick={goToCheckout}
-          disabled={!stripe || checkoutBodyArray.length === 0}
+          disabled={cartEmpty || submitting}
         >
-          Make payment
+          {submitting ? 'Redirecting...' : 'Make payment'}
         </button>
       </div>
     </div>

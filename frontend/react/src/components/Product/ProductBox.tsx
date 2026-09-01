@@ -24,6 +24,7 @@ const ProductBox: React.FC<Props> = ({ product }) => {
           <sup>$</sup>
           {product.price}
         </p>
+        <p className="card-text">{product.stock > 0 ? `${product.stock} in stock` : 'Out of stock'}</p>
         <p className="card-text font-italic">{product.description.substring(0, 65)}...</p>
         {onAdminPage && (
           <Link id="edit-product" to={`/admin/product/${product.id}`}>
