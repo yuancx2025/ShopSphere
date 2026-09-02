@@ -18,18 +18,17 @@ src/
 ├── components/
 │   ├── auth/           # RouteGuards (RequireAuth, RequireAdmin)
 │   ├── layout/         # Navbar, Footer
-│   ├── Category/       # CategoryBox
-│   └── Product/         # ProductBox
+│   ├── category/       # CategoryBox
+│   └── product/        # ProductBox
 ├── pages/
 │   ├── Home.tsx
 │   ├── Signin.tsx
 │   ├── Signup.tsx
-│   ├── Category/        # List, add, edit (admin)
-│   ├── Product/         # Catalog, details, wishlist, add/edit (admin)
+│   ├── category/        # List, add, edit (admin)
+│   ├── product/         # Catalog, details, wishlist, add/edit (admin)
 │   ├── cart/
-│   ├── Checkout/
-│   ├── order/           # History and details
-│   └── payment/         # Stripe success / failed
+│   ├── checkout/        # Start checkout + Stripe success / failed return pages
+│   └── order/           # History and details
 ├── utils/
 │   ├── auth.ts          # Bearer headers and admin check
 │   └── constants.ts     # API_BASE_URL

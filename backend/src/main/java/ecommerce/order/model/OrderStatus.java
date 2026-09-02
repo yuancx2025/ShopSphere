@@ -1,4 +1,4 @@
-package ecommerce.model;
+package ecommerce.order.model;
 
 public enum OrderStatus {
     PENDING,

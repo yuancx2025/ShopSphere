@@ -1,13 +1,14 @@
-package ecommerce.dto.checkout;
+package ecommerce.payment.dto;
 
-public class StripeResponseDto {
+/** API response for POST /order/create-checkout-session. Frontend redirects to {@link #url}. */
+public class CheckoutSessionResponseDto {
     private String sessionId;
     private String url;
 
-    public StripeResponseDto() {
+    public CheckoutSessionResponseDto() {
     }
 
-    public StripeResponseDto(String sessionId, String url) {
+    public CheckoutSessionResponseDto(String sessionId, String url) {
         this.sessionId = sessionId;
         this.url = url;
     }

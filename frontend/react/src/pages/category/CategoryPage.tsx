@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import CategoryBox from '../../components/Category/CategoryBox';
+import CategoryBox from '../../components/category/CategoryBox';
 import { Category } from '../../types';
 
 interface Props {

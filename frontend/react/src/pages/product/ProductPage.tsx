@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import ProductBox from '../../components/Product/ProductBox';
+import ProductBox from '../../components/product/ProductBox';
 import { Product } from '../../types';
 
 interface Props {

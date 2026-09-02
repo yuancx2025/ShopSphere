@@ -1,4 +1,4 @@
-package ecommerce.model;
+package ecommerce.payment.stripe.persistence;
 
 import java.time.Instant;
 
@@ -7,6 +7,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+/**
+ * One row per handled Stripe webhook event id (Stripe's {@code evt_...} string).
+ */
 @Entity
 @Table(name = "processed_stripe_events")
 public class ProcessedStripeEvent {

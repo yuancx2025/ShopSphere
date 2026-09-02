@@ -1,4 +1,4 @@
-package ecommerce.controllers;
+package ecommerce.order;
 
 import java.util.List;
 
@@ -10,16 +10,13 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.stripe.exception.StripeException;
-
-import ecommerce.dto.checkout.StripeResponseDto;
-import ecommerce.dto.order.OrderResponseDto;
 import ecommerce.exceptions.AuthenticationFailException;
 import ecommerce.exceptions.CustomException;
 import ecommerce.exceptions.OrderNotFoundException;
 import ecommerce.model.User;
+import ecommerce.order.dto.OrderResponseDto;
+import ecommerce.payment.dto.CheckoutSessionResponseDto;
 import ecommerce.security.CurrentUserService;
-import ecommerce.service.OrderService;
 
 @RestController
 @RequestMapping("/order")
@@ -34,8 +31,8 @@ public class OrderController {
     }
 
     @PostMapping("/create-checkout-session")
-    public ResponseEntity<StripeResponseDto> createCheckoutSession()
-            throws StripeException, AuthenticationFailException, CustomException {
+    public ResponseEntity<CheckoutSessionResponseDto> createCheckoutSession()
+            throws AuthenticationFailException, CustomException {
         User user = currentUserService.requireCurrentUser();
         return new ResponseEntity<>(orderService.createSession(user), HttpStatus.OK);
     }
@@ -48,9 +45,16 @@ public class OrderController {
 
     @GetMapping("/session/{sessionId}")
     public ResponseEntity<OrderResponseDto> getOrderBySession(@PathVariable("sessionId") String sessionId)
-            throws AuthenticationFailException, OrderNotFoundException, StripeException {
+            throws AuthenticationFailException, OrderNotFoundException {
         User user = currentUserService.requireCurrentUser();
         return new ResponseEntity<>(orderService.getOrderForSession(sessionId, user), HttpStatus.OK);
+    }
+
+    @PostMapping("/session/{sessionId}/reconcile")
+    public ResponseEntity<OrderResponseDto> reconcileSession(@PathVariable("sessionId") String sessionId)
+            throws AuthenticationFailException, OrderNotFoundException {
+        User user = currentUserService.requireCurrentUser();
+        return new ResponseEntity<>(orderService.reconcileCheckout(sessionId, user), HttpStatus.OK);
     }
 
     @GetMapping("/{id}")

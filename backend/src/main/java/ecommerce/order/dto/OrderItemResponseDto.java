@@ -1,4 +1,4 @@
-package ecommerce.dto.order;
+package ecommerce.order.dto;
 
 public class OrderItemResponseDto {
 

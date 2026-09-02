@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import ProductBox from '../../components/Product/ProductBox';
+import ProductBox from '../../components/product/ProductBox';
 import { Product } from '../../types';
 import { authHeaders } from '../../utils/auth';
 

@@ -1,9 +1,10 @@
-package ecommerce.model;
+package ecommerce.order.model;
 
 import java.util.Date;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
+import ecommerce.model.Product;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -103,4 +104,3 @@ public class OrderItem {
         this.order = order;
     }
 }
-

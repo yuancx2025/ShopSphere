@@ -18,12 +18,15 @@ src/main/java/ecommerce/
 ├── EcommerceApplication.java    # Main application entry point
 ├── common/                      # Shared utilities and responses
 ├── config/                      # Configuration classes
-├── controllers/                 # REST API controllers
-├── dto/                         # Data Transfer Objects
+├── controllers/                 # Cart, product, category, user, wishlist APIs
+├── dto/                         # Cart, product, and user DTOs
 ├── exceptions/                  # Custom exceptions and handlers
-├── model/                       # JPA Entity models
-├── repository/                  # Data access repositories
-└── service/                     # Business logic services
+├── model/                       # Product, user, cart, category, wishlist entities
+├── repository/                  # Data access for the models above
+├── security/                    # JWT auth
+├── service/                     # Cart, product, category, user, wishlist logic
+├── order/                       # Order domain: controller, service, model, repository, dto
+└── payment/                     # Provider-neutral checkout gateway + Stripe adapter
 ```
 
 ## Getting Started

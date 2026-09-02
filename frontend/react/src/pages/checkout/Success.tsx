@@ -32,10 +32,16 @@ const PaymentSuccess: React.FC<Props> = ({ baseURL }) => {
 
     let attempts = 0;
     let cancelled = false;
+    const sessionURL = `${baseURL}order/session/${encodeURIComponent(sessionId)}`;
 
-    const poll = () => {
-      axios
-        .get<Order>(`${baseURL}order/session/${encodeURIComponent(sessionId)}`, { headers: authHeaders() })
+    const attempt = (first: boolean) => {
+      // The first request asks the backend to confirm with Stripe in case the webhook is delayed.
+      // Later ones only read the stored order, so polling costs nothing beyond a database lookup.
+      const request = first
+        ? axios.post<Order>(`${sessionURL}/reconcile`, null, { headers: authHeaders() })
+        : axios.get<Order>(sessionURL, { headers: authHeaders() });
+
+      request
         .then((response) => {
           if (cancelled) return;
           if (response.data.status === 'PAID') {
@@ -43,12 +49,7 @@ const PaymentSuccess: React.FC<Props> = ({ baseURL }) => {
             setMessage('Payment successful. Your order is confirmed.');
             return;
           }
-          attempts += 1;
-          if (attempts >= MAX_ATTEMPTS) {
-            setMessage('Payment received, order is still confirming. You can check Order History in a moment.');
-            return;
-          }
-          setTimeout(poll, POLL_INTERVAL_MS);
+          retry();
         })
         .catch((error) => {
           if (cancelled) return;
@@ -57,16 +58,20 @@ const PaymentSuccess: React.FC<Props> = ({ baseURL }) => {
             setMessage('Payment received. Sign in to see your order. The order is still being confirmed.');
             return;
           }
-          attempts += 1;
-          if (attempts >= MAX_ATTEMPTS) {
-            setMessage('Payment received, order is still confirming. You can check Order History in a moment.');
-            return;
-          }
-          setTimeout(poll, POLL_INTERVAL_MS);
+          retry();
         });
+
+      function retry() {
+        attempts += 1;
+        if (attempts >= MAX_ATTEMPTS) {
+          setMessage('Payment received, order is still confirming. You can check Order History in a moment.');
+          return;
+        }
+        setTimeout(() => attempt(false), POLL_INTERVAL_MS);
+      }
     };
 
-    poll();
+    attempt(true);
     return () => {
       cancelled = true;
     };

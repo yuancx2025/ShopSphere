@@ -115,9 +115,12 @@ Base URL: `http://localhost:8080`
 | `/cart/` | GET | Get user's cart |
 | `/cart/add` | POST | Add item to cart |
 | `/wishlist/` | GET | Get user's wishlist |
-| `/order/create-checkout-session` | POST | Initialize Stripe payment |
-| `/order/add` | POST | Place order |
+| `/order/create-checkout-session` | POST | Reserve stock and start a payment session |
 | `/order/` | GET | Get order history |
+| `/order/{id}` | GET | Get one order |
+| `/order/session/{sessionId}` | GET | Read the order for a checkout session |
+| `/order/session/{sessionId}/reconcile` | POST | Confirm payment when the webhook is delayed |
+| `/webhook/stripe` | POST | Stripe webhook (signature verified, no JWT) |
 
 See [API Documentation](docs/API.md) for authentication and request/response details.
 

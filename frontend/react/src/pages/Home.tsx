@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
-import CategoryBox from '../components/Category/CategoryBox';
-import ProductBox from '../components/Product/ProductBox';
+import CategoryBox from '../components/category/CategoryBox';
+import ProductBox from '../components/product/ProductBox';
 import { Category, Product } from '../types';
 import './Home.css';
 

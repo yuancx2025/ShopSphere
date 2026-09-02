@@ -1,6 +1,5 @@
-package ecommerce.controllers;
+package ecommerce.payment.stripe;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -10,27 +9,33 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.stripe.exception.SignatureVerificationException;
-import com.stripe.exception.StripeException;
 import com.stripe.model.Event;
 import com.stripe.model.StripeObject;
 import com.stripe.model.checkout.Session;
 import com.stripe.net.Webhook;
 
-import ecommerce.model.OrderStatus;
-import ecommerce.service.OrderService;
+import ecommerce.order.OrderService;
+import ecommerce.order.model.OrderStatus;
 
+/**
+ * Entry point for Stripe server-to-server notifications. Public (no JWT); authenticity is
+ * verified via {@code Stripe-Signature}. Delegates business rules to {@link OrderService}.
+ */
 @RestController
 @RequestMapping("/webhook")
 public class StripeWebhookController {
 
     private final OrderService orderService;
-    private final String webhookSecret;
+    private final StripeEventService stripeEventService;
+    private final StripeProperties stripeProperties;
 
     public StripeWebhookController(
             OrderService orderService,
-            @Value("${STRIPE_WEBHOOK_SECRET:}") String webhookSecret) {
+            StripeEventService stripeEventService,
+            StripeProperties stripeProperties) {
         this.orderService = orderService;
-        this.webhookSecret = webhookSecret;
+        this.stripeEventService = stripeEventService;
+        this.stripeProperties = stripeProperties;
     }
 
     @PostMapping("/stripe")
@@ -39,12 +44,12 @@ public class StripeWebhookController {
             @RequestHeader("Stripe-Signature") String stripeSignature) {
         Event event;
         try {
-            event = Webhook.constructEvent(payload, stripeSignature, webhookSecret);
+            event = Webhook.constructEvent(payload, stripeSignature, stripeProperties.getWebhookSecret());
         } catch (SignatureVerificationException | IllegalArgumentException ex) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Invalid signature");
         }
 
-        if (orderService.alreadyProcessed(event.getId())) {
+        if (stripeEventService.alreadyProcessed(event.getId())) {
             return ResponseEntity.ok("ok");
         }
 
@@ -63,9 +68,11 @@ public class StripeWebhookController {
                 default:
                     return ResponseEntity.ok("ignored");
             }
-            orderService.recordProcessedEvent(event.getId());
+            // Record only after order logic succeeds so Stripe retries on transient failures.
+            stripeEventService.recordProcessedEvent(event.getId());
             return ResponseEntity.ok("ok");
-        } catch (StripeException | RuntimeException ex) {
+        } catch (RuntimeException ex) {
+            // 500 tells Stripe to retry; do not record the event id yet.
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("retry");
         }
     }
@@ -75,6 +82,7 @@ public class StripeWebhookController {
         if (stripeObject instanceof Session session && session.getId() != null) {
             return session.getId();
         }
+        // Some API versions need the unsafe deserializer to populate the session object.
         try {
             StripeObject unsafe = event.getDataObjectDeserializer().deserializeUnsafe();
             if (unsafe instanceof Session session && session.getId() != null) {

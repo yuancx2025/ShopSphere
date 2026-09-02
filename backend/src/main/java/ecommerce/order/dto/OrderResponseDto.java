@@ -1,9 +1,9 @@
-package ecommerce.dto.order;
+package ecommerce.order.dto;
 
 import java.util.Date;
 import java.util.List;
 
-import ecommerce.model.OrderStatus;
+import ecommerce.order.model.OrderStatus;
 
 public class OrderResponseDto {
 
