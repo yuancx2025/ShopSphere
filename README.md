@@ -26,7 +26,7 @@ A full-stack e-commerce platform with comprehensive product management, shopping
 - Spring Boot 3.2.2
 - Spring Data JPA (Hibernate)
 - MySQL 8.0
-- Stripe Java SDK (v20.41.0)
+- Stripe Java SDK (v24.23.0)
 - OpenAPI 3.0 / Swagger UI
 - Maven build system
 
@@ -47,31 +47,64 @@ A full-stack e-commerce platform with comprehensive product management, shopping
 
 ```
 e-commerce/
-├── backend/                    # Spring Boot REST API
-│   ├── src/main/java/
-│   │   └── EcommerceApplication.java   # App entry point
-│   │       ├── controllers/    # REST endpoints
-│   │       ├── service/        # Business logic
-│   │       ├── model/          # JPA entities
-│   │       ├── repository/     # Data access layer
-│   │       ├── dto/            # Data transfer objects
-│   │       ├── config/         # App configuration
-│   │       └── exceptions/     # Custom exceptions
+├── backend/                         # Spring Boot REST API
+│   ├── src/main/java/ecommerce/
+│   │   ├── EcommerceApplication.java
+│   │   ├── common/                  # Shared API response helpers
+│   │   ├── config/                  # Security, CORS, Swagger
+│   │   ├── controllers/             # Cart, category, product, user, wishlist
+│   │   ├── dto/                     # Cart, product, user DTOs
+│   │   ├── exceptions/              # Custom exceptions + GlobalExceptionHandler
+│   │   ├── model/                   # Product, user, cart, category, wishlist
+│   │   ├── repository/              # JPA repos for the models above
+│   │   ├── security/                # JWT filter, CurrentUserService
+│   │   ├── service/                 # Cart, category, product, user, wishlist
+│   │   ├── order/                   # Order domain
+│   │   │   ├── OrderController.java
+│   │   │   ├── OrderService.java
+│   │   │   ├── dto/                 # OrderResponseDto, OrderItemResponseDto
+│   │   │   ├── model/               # Order, OrderItem, OrderStatus
+│   │   │   └── repository/          # OrderRepository, OrderItemsRepository
+│   │   └── payment/                 # Checkout / payment provider boundary
+│   │       ├── PaymentGateway.java  # Provider-neutral interface
+│   │       ├── CheckoutCommand.java
+│   │       ├── PaymentSession.java
+│   │       ├── dto/                 # CheckoutSessionResponseDto
+│   │       └── stripe/              # Stripe adapter
+│   │           ├── StripePaymentGateway.java
+│   │           ├── StripeWebhookController.java
+│   │           ├── StripeEventService.java
+│   │           ├── StripeProperties.java
+│   │           └── persistence/     # ProcessedStripeEvent (webhook idempotency)
 │   ├── src/main/resources/
 │   │   ├── application.properties
-│   │   └── db/migrations/      # Flyway migrations
-│   └── pom.xml
-├── frontend/react/             # React TypeScript SPA
+│   │   └── db/migrations/           # Flyway (V1–V3)
+│   ├── pom.xml
+│   └── README.md
+├── frontend/react/                  # React TypeScript SPA
 │   ├── src/
-│   │   ├── pages/              # Page components
-│   │   ├── components/         # Reusable components
-│   │   ├── api/                # API client & services
-│   │   ├── context/            # React context (Auth, Cart)
-│   │   ├── hooks/              # Custom React hooks
-│   │   └── utils/              # Helper functions
+│   │   ├── App.tsx                  # Routes
+│   │   ├── main.tsx
+│   │   ├── types.ts
+│   │   ├── components/
+│   │   │   ├── auth/                # RequireAuth, RequireAdmin
+│   │   │   ├── layout/              # Navbar, Footer
+│   │   │   ├── category/            # CategoryBox
+│   │   │   └── product/             # ProductBox
+│   │   ├── pages/
+│   │   │   ├── Home.tsx, Signin.tsx, Signup.tsx
+│   │   │   ├── category/            # Admin category CRUD
+│   │   │   ├── product/             # Catalog, details, wishlist, admin CRUD
+│   │   │   ├── cart/
+│   │   │   ├── checkout/            # Checkout + Stripe return (Success, Failed)
+│   │   │   └── order/               # Order history and details
+│   │   ├── utils/                   # auth.ts, constants.ts (API_BASE_URL)
+│   │   └── styles/                  # CSS variables and mixins
+│   ├── index.html
 │   ├── vite.config.ts
-│   └── package.json
-├── docs/                       # Documentation
+│   ├── package.json
+│   └── README.md
+├── .github/workflows/               # backend-ci.yml, frontend-ci.yml
 ├── docker-compose.yml
 └── README.md
 ```
