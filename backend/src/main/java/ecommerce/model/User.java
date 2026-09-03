@@ -1,5 +1,7 @@
 package ecommerce.model;
 
+import java.util.Locale;
+
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -65,7 +67,7 @@ public class User {
     }
 
     public void setEmail(String email) {
-        this.email = email;
+        this.email = normalizeEmail(email);
     }
 
     public String getPassword() {
@@ -87,11 +89,15 @@ public class User {
     public User(String firstName, String lastName, String email, String password) {
         this.firstName = firstName;
         this.lastName = lastName;
-        this.email = email;
+        this.email = normalizeEmail(email);
         this.password = password;
         this.role = Role.USER;
     }
 
     public User() {
+    }
+
+    static String normalizeEmail(String email) {
+        return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
     }
 }

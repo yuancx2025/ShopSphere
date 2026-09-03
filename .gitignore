@@ -118,3 +118,6 @@ secrets/
 
 # Local documentation and plans
 docs/
+
+# Neon CLI (if used later)
+.neon

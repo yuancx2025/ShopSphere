@@ -25,7 +25,7 @@ A full-stack e-commerce platform with comprehensive product management, shopping
 - Java 17
 - Spring Boot 3.2.2
 - Spring Data JPA (Hibernate)
-- MySQL 8.0
+- PostgreSQL 16 (Neon)
 - Stripe Java SDK (v24.23.0)
 - OpenAPI 3.0 / Swagger UI
 - Maven build system
@@ -40,7 +40,7 @@ A full-stack e-commerce platform with comprehensive product management, shopping
 
 ### Infrastructure
 - Docker & Docker Compose
-- MySQL containerization
+- Postgres 16 containerization (optional Neon Local overlay)
 - Nginx (production deployment)
 
 ## Project Structure
@@ -78,7 +78,7 @@ e-commerce/
 │   │           └── persistence/     # ProcessedStripeEvent (webhook idempotency)
 │   ├── src/main/resources/
 │   │   ├── application.properties
-│   │   └── db/migrations/           # Flyway (V1–V3)
+│   │   └── db/migrations/           # Flyway (V1 Postgres baseline)
 │   ├── pom.xml
 │   └── README.md
 ├── frontend/react/                  # React TypeScript SPA
@@ -114,15 +114,19 @@ e-commerce/
 ### Prerequisites
 - Java 17+
 - Node.js 18+
-- MySQL 8.0+
+- PostgreSQL 16 (or Docker Compose)
 - Docker (optional)
 - Stripe account for payment processing
 
 ### Using Docker Compose
 ```bash
+# First cutover from MySQL: drop the old volume
+docker compose down -v
 docker compose up -d
 ```
 Access: Frontend at `http://localhost:3000`, API at `http://localhost:8080`
+
+To run the API against Neon instead of local Postgres, set `SPRING_DATASOURCE_URL` (pooled `-pooler` host) and `SPRING_FLYWAY_URL` (direct host) in `.env`.
 
 ### Manual Setup
 See [docs/SETUP.md](docs/SETUP.md) for detailed configuration.
@@ -201,7 +205,7 @@ The Stripe roadmap is organized around transferable payment and distributed-syst
 
 1. **Reliability fundamentals**: persist a complete payment record, verify amount/currency during fulfillment, handle ambiguous network failures, and make late payments safe.
 2. **Webhook engineering**: use an atomic event inbox, tolerate duplicate and out-of-order delivery, and move heavier processing to a durable worker.
-3. **Deterministic testing**: test `OrderService` through `FakePaymentGateway`, use MySQL integration tests for locks and state transitions, and reserve Stripe Sandboxes/CLI for contract-level checks.
+3. **Deterministic testing**: test `OrderService` through `FakePaymentGateway`, use Postgres integration tests for locks and state transitions, and reserve Stripe Sandboxes/CLI for contract-level checks.
 4. **Full payment lifecycle**: implement full and partial refunds, refund webhooks, payment review states, and separate refund decisions from inventory-restock decisions.
 5. **Commerce features**: add eligible dynamic payment methods, shipping addresses/rates, promotion codes, explicit subtotal/discount/shipping/tax totals, and optionally Stripe Tax.
 6. **Customer lifecycle**: map local users to Stripe Customers, optionally save payment methods with consent, and add payment receipts plus application-owned order confirmations.

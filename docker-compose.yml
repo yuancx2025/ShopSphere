@@ -1,10 +1,35 @@
 version: '3.8'
 
 services:
-  # MySQL Database
+  # Local Postgres 16 (same major version as Neon). Wipe the old MySQL volume:
+  #   docker compose down -v
+  db:
+    image: postgres:16-alpine
+    container_name: ecommerce-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ecommerce_v2
+      POSTGRES_USER: ecommerce
+      POSTGRES_PASSWORD: ecommerce
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecommerce -d ecommerce_v2"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Rollback / dump source only. Does not work with the Postgres-only backend.
+  #   docker compose --profile mysql up mysql
   mysql:
     image: mysql:8.0
     container_name: ecommerce-mysql
+    profiles:
+      - mysql
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: root
@@ -31,11 +56,11 @@ services:
     container_name: ecommerce-backend
     restart: unless-stopped
     depends_on:
-      mysql:
+      db:
         condition: service_healthy
     environment:
       SPRING_PROFILES_ACTIVE: dev
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ecommerce_v2
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/ecommerce_v2
       SPRING_DATASOURCE_USERNAME: ecommerce
       SPRING_DATASOURCE_PASSWORD: ecommerce
       BASE_URL: http://localhost:3000/
@@ -78,6 +103,8 @@ services:
       - tools
 
 volumes:
+  postgres_data:
+    driver: local
   mysql_data:
     driver: local
 

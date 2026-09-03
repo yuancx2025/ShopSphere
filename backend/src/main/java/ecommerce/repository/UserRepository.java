@@ -13,7 +13,8 @@ import jakarta.persistence.LockModeType;
 @Repository
 public interface UserRepository extends JpaRepository<User, Integer> {
 
-    User findByEmail(String email);
+    @Query("SELECT u FROM User u WHERE LOWER(u.email) = LOWER(:email)")
+    User findByEmail(@Param("email") String email);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT u FROM User u WHERE u.id = :id")
