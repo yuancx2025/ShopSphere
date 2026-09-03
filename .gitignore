@@ -116,9 +116,5 @@ data/
 *.key
 secrets/
 
-# Keep project plans in version control while ignoring other generated documentation.
+# Local documentation and plans
 docs/
-!docs/
-docs/*
-!docs/plans/
-!docs/plans/*.md
