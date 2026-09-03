@@ -8,6 +8,7 @@ import { RequireAdmin, RequireAuth } from './components/auth/RouteGuards';
 
 import Home from './pages/Home';
 import CategoryPage from './pages/category/CategoryPage';
+import CategoryShop from './pages/category/CategoryShop';
 import AddCategory from './pages/category/AddCategory';
 import EditCategory from './pages/category/EditCategory';
 import ProductPage from './pages/product/ProductPage';
@@ -62,6 +63,12 @@ const App: React.FC = () => {
           <Route
             path="/"
             element={<Home products={products} categories={categories} loading={loading} />}
+          />
+          <Route
+            path="/category/:id"
+            element={
+              <CategoryShop products={products} categories={categories} loading={loading} />
+            }
           />
           <Route
             path="/admin/category/add"

@@ -6,6 +6,7 @@
 
 # Package files
 *.jar
+!backend/.mvn/wrapper/maven-wrapper.jar
 *.war
 *.ear
 *.zip
