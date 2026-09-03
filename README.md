@@ -195,9 +195,19 @@ npm run build
 - **Performance Monitoring**: Track and optimize P95/P99 latency metrics
 - **Load Testing**: Establish baseline performance under concurrent user load
 
-### Payment & Checkout
-- **Enhanced Stripe Integration**: Implement webhooks for payment status updates and refund handling
-- **Multiple Payment Methods**: Support for PayPal, Apple Pay, Google Pay
+### Payment & Checkout Learning Roadmap
+
+The Stripe roadmap is organized around transferable payment and distributed-systems skills rather than adding isolated provider features:
+
+1. **Reliability fundamentals**: persist a complete payment record, verify amount/currency during fulfillment, handle ambiguous network failures, and make late payments safe.
+2. **Webhook engineering**: use an atomic event inbox, tolerate duplicate and out-of-order delivery, and move heavier processing to a durable worker.
+3. **Deterministic testing**: test `OrderService` through `FakePaymentGateway`, use MySQL integration tests for locks and state transitions, and reserve Stripe Sandboxes/CLI for contract-level checks.
+4. **Full payment lifecycle**: implement full and partial refunds, refund webhooks, payment review states, and separate refund decisions from inventory-restock decisions.
+5. **Commerce features**: add eligible dynamic payment methods, shipping addresses/rates, promotion codes, explicit subtotal/discount/shipping/tax totals, and optionally Stripe Tax.
+6. **Customer lifecycle**: map local users to Stripe Customers, optionally save payment methods with consent, and add payment receipts plus application-owned order confirmations.
+7. **Production operations**: upgrade to the current Stripe Java client, pin/test API and webhook versions, protect keys, record provider identifiers, add observability, and reconcile stuck payments.
+
+See [Stripe Learning and Transferable Payments Roadmap](docs/plans/stripe-learning-roadmap.md) for milestones, acceptance evidence, read order, and the concepts each step transfers to other integrations.
 
 ### Testing & Quality
 - **Integration Testing**: Comprehensive API endpoint testing
