@@ -1,8 +1,10 @@
 package ecommerce.order.repository;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -31,4 +33,14 @@ public interface OrderRepository extends JpaRepository<Order, Integer> {
 
     @Query("SELECT o FROM Order o LEFT JOIN FETCH o.orderItems WHERE o.sessionId = :sessionId")
     Optional<Order> findBySessionIdWithItems(@Param("sessionId") String sessionId);
+
+    /**
+     * Orders still holding reserved stock long after their payment session should have settled.
+     * Backed by {@code idx_orders_status_created}.
+     */
+    @Query("SELECT o FROM Order o WHERE o.status = :status AND o.createdDate < :createdBefore ORDER BY o.createdDate ASC")
+    List<Order> findStaleByStatus(
+            @Param("status") OrderStatus status,
+            @Param("createdBefore") Date createdBefore,
+            Pageable pageable);
 }

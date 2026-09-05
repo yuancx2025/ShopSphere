@@ -10,7 +10,7 @@ A full-stack e-commerce platform with comprehensive product management, shopping
 - **Category Navigation**: Browse products organized by categories
 - **Wishlist Management**: Save favorite products for future purchases
 - **Shopping Cart**: Add, update quantities, and remove items with real-time calculations
-- **Stripe Checkout**: Secure payment processing with Stripe integration
+- **Stripe Checkout**: Hosted card payments (Visa, Mastercard, Amex) plus eligible wallets, presented by Stripe's dynamic payment methods
 - **Order History**: View complete order history with detailed order breakdowns
 - **Order Tracking**: Access individual order details and item information
 
@@ -26,7 +26,7 @@ A full-stack e-commerce platform with comprehensive product management, shopping
 - Spring Boot 3.2.2
 - Spring Data JPA (Hibernate)
 - PostgreSQL 16 (Neon)
-- Stripe Java SDK (v24.23.0)
+- Stripe Java SDK (v33.4.1)
 - OpenAPI 3.0 / Swagger UI
 - Maven build system
 
@@ -40,7 +40,7 @@ A full-stack e-commerce platform with comprehensive product management, shopping
 
 ### Infrastructure
 - Docker & Docker Compose
-- Postgres 16 containerization (optional Neon Local overlay)
+- Postgres 16 containerization
 - Nginx (production deployment)
 
 ## Project Structure
@@ -62,6 +62,7 @@ e-commerce/
 │   │   ├── order/                   # Order domain
 │   │   │   ├── OrderController.java
 │   │   │   ├── OrderService.java
+│   │   │   ├── CheckoutReconciliationJob.java  # Repairs orders stuck PENDING
 │   │   │   ├── dto/                 # OrderResponseDto, OrderItemResponseDto
 │   │   │   ├── model/               # Order, OrderItem, OrderStatus
 │   │   │   └── repository/          # OrderRepository, OrderItemsRepository
@@ -69,16 +70,17 @@ e-commerce/
 │   │       ├── PaymentGateway.java  # Provider-neutral interface
 │   │       ├── CheckoutCommand.java
 │   │       ├── PaymentSession.java
+│   │       ├── PaymentStatus.java   # Provider-neutral payment lifecycle
 │   │       ├── dto/                 # CheckoutSessionResponseDto
 │   │       └── stripe/              # Stripe adapter
 │   │           ├── StripePaymentGateway.java
 │   │           ├── StripeWebhookController.java
 │   │           ├── StripeEventService.java
 │   │           ├── StripeProperties.java
-│   │           └── persistence/     # ProcessedStripeEvent (webhook idempotency)
+│   │           └── persistence/     # ProcessedStripeEvent (webhook inbox)
 │   ├── src/main/resources/
 │   │   ├── application.properties
-│   │   └── db/migrations/           # Flyway (V1 Postgres baseline)
+│   │   └── db/migrations/           # Flyway (V1 baseline, V2 payment reliability)
 │   ├── pom.xml
 │   └── README.md
 ├── frontend/react/                  # React TypeScript SPA
@@ -200,6 +202,10 @@ npm run build
 - **Load Testing**: Establish baseline performance under concurrent user load
 
 ### Payment & Checkout Learning Roadmap
+
+Checkout is deliberately Stripe-only. PayPal through Stripe requires an EU/UK/CH/NO/LI business
+location and this account is US-based, so customers are offered card plus eligible wallets rather
+than a provider choice. See the roadmap for the full reasoning.
 
 The Stripe roadmap is organized around transferable payment and distributed-systems skills rather than adding isolated provider features:
 

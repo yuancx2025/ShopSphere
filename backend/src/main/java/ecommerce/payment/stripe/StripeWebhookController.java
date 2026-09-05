@@ -1,5 +1,7 @@
 package ecommerce.payment.stripe;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -25,6 +27,8 @@ import ecommerce.order.model.OrderStatus;
 @RequestMapping("/webhook")
 public class StripeWebhookController {
 
+    private static final Logger log = LoggerFactory.getLogger(StripeWebhookController.class);
+
     private final OrderService orderService;
     private final StripeEventService stripeEventService;
     private final StripeProperties stripeProperties;
@@ -49,8 +53,10 @@ public class StripeWebhookController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Invalid signature");
         }
 
-        if (stripeEventService.alreadyProcessed(event.getId())) {
-            return ResponseEntity.ok("ok");
+        // Atomic claim. A duplicate or concurrent delivery loses the race and is acknowledged
+        // without re-running the business logic.
+        if (!stripeEventService.claim(event.getId())) {
+            return ResponseEntity.ok("duplicate");
         }
 
         try {
@@ -66,13 +72,15 @@ public class StripeWebhookController {
                     orderService.releaseCheckout(requireSessionId(event), OrderStatus.FAILED);
                     break;
                 default:
+                    stripeEventService.complete(event.getId());
                     return ResponseEntity.ok("ignored");
             }
-            // Record only after order logic succeeds so Stripe retries on transient failures.
-            stripeEventService.recordProcessedEvent(event.getId());
+            stripeEventService.complete(event.getId());
             return ResponseEntity.ok("ok");
         } catch (RuntimeException ex) {
-            // 500 tells Stripe to retry; do not record the event id yet.
+            // Release the claim so Stripe's retry can re-enter, then ask for that retry with a 500.
+            stripeEventService.release(event.getId());
+            log.error("Failed to handle Stripe event {} of type {}", event.getId(), event.getType(), ex);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("retry");
         }
     }

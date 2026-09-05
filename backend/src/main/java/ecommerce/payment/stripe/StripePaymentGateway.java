@@ -6,7 +6,7 @@ import java.util.List;
 
 import org.springframework.stereotype.Component;
 
-import com.stripe.Stripe;
+import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.checkout.Session;
 import com.stripe.net.RequestOptions;
@@ -16,24 +16,27 @@ import ecommerce.payment.CheckoutCommand;
 import ecommerce.payment.PaymentException;
 import ecommerce.payment.PaymentGateway;
 import ecommerce.payment.PaymentSession;
-import jakarta.annotation.PostConstruct;
+import ecommerce.payment.PaymentStatus;
 
 /**
  * Stripe implementation of {@link PaymentGateway}. This is the only class in the codebase
  * that imports {@code com.stripe.*}.
+ *
+ * <p>Calls go through an injected {@link StripeClient} rather than the global {@code Stripe.apiKey}
+ * and static model methods, so credentials are per-instance and the gateway can be constructed with
+ * different configuration in a test.
  */
 @Component
 public class StripePaymentGateway implements PaymentGateway {
 
     private final StripeProperties stripeProperties;
+    private final StripeClient stripeClient;
 
     public StripePaymentGateway(StripeProperties stripeProperties) {
         this.stripeProperties = stripeProperties;
-    }
-
-    @PostConstruct
-    void initStripe() {
-        Stripe.apiKey = stripeProperties.getSecretKey();
+        this.stripeClient = StripeClient.builder()
+                .setApiKey(stripeProperties.getSecretKey())
+                .build();
     }
 
     @Override
@@ -48,7 +51,7 @@ public class StripePaymentGateway implements PaymentGateway {
             lineItems.add(SessionCreateParams.LineItem.builder()
                     .setQuantity(item.getQuantity())
                     .setPriceData(SessionCreateParams.LineItem.PriceData.builder()
-                            .setCurrency("usd")
+                            .setCurrency(stripeProperties.getCurrency())
                             .setUnitAmount(item.getUnitAmountCents())
                             .setProductData(SessionCreateParams.LineItem.PriceData.ProductData.builder()
                                     .setName(item.getProductName())
@@ -80,7 +83,7 @@ public class StripePaymentGateway implements PaymentGateway {
                 .setIdempotencyKey("checkout-order-" + command.getOrderId())
                 .build();
         try {
-            return toPaymentSession(Session.create(params.build(), options));
+            return toPaymentSession(stripeClient.checkout().sessions().create(params.build(), options));
         } catch (StripeException ex) {
             throw new PaymentException("Unable to start payment", ex);
         }
@@ -89,7 +92,7 @@ public class StripePaymentGateway implements PaymentGateway {
     @Override
     public PaymentSession retrieveSession(String sessionId) {
         try {
-            return toPaymentSession(Session.retrieve(sessionId));
+            return toPaymentSession(stripeClient.checkout().sessions().retrieve(sessionId));
         } catch (StripeException ex) {
             throw new PaymentException("Unable to retrieve payment session", ex);
         }
@@ -101,16 +104,20 @@ public class StripePaymentGateway implements PaymentGateway {
             return;
         }
         try {
-            Session session = Session.retrieve(sessionId);
-            session.expire();
+            stripeClient.checkout().sessions().expire(sessionId);
         } catch (StripeException | RuntimeException ignored) {
-            // Already expired, already paid, or SDK without expire().
+            // Already expired or already paid; nothing to invalidate.
         }
     }
 
     @Override
     public long minimumChargeCents() {
         return stripeProperties.getMinimumChargeCents();
+    }
+
+    @Override
+    public String expectedCurrency() {
+        return stripeProperties.getCurrency();
     }
 
     private PaymentSession toPaymentSession(Session session) {
@@ -125,7 +132,45 @@ public class StripePaymentGateway implements PaymentGateway {
                 }
             }
         }
-        return new PaymentSession(session.getId(), session.getUrl(), session.getPaymentStatus(), orderId);
+        String currency = session.getCurrency() == null ? null : session.getCurrency().toLowerCase();
+        String rawStatus = session.getStatus() + "/" + session.getPaymentStatus();
+        return new PaymentSession(
+                session.getId(),
+                session.getUrl(),
+                normalizeStatus(session),
+                rawStatus,
+                session.getAmountTotal(),
+                currency,
+                orderId);
+    }
+
+    /**
+     * Maps Stripe's two status fields onto {@link PaymentStatus}.
+     *
+     * <p>Session {@code status} is {@code open}, {@code complete}, or {@code expired}.
+     * {@code payment_status} is {@code paid}, {@code unpaid}, or {@code no_payment_required};
+     * the latter covers fully discounted orders, which must still fulfill.
+     *
+     * <p>Payment is checked before expiry on purpose. Stripe should never report a session that is
+     * both expired and paid, but if it did, treating it as expired would cancel the order and
+     * restore stock for a customer whose money was actually taken.
+     */
+    // Package-private so the mapping can be unit-tested without a Stripe account or a database.
+    PaymentStatus normalizeStatus(Session session) {
+        String sessionStatus = session.getStatus();
+        String paymentStatus = session.getPaymentStatus();
+
+        if ("paid".equalsIgnoreCase(paymentStatus) || "no_payment_required".equalsIgnoreCase(paymentStatus)) {
+            return PaymentStatus.SUCCEEDED;
+        }
+        if ("expired".equalsIgnoreCase(sessionStatus)) {
+            return PaymentStatus.EXPIRED;
+        }
+        if ("complete".equalsIgnoreCase(sessionStatus)) {
+            // Checkout finished but a delayed method has not settled yet.
+            return PaymentStatus.PROCESSING;
+        }
+        return PaymentStatus.CREATED;
     }
 
     private String trimBaseUrl(String url) {

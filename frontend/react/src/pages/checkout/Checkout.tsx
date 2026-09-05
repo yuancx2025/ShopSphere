@@ -64,7 +64,12 @@ const Checkout: React.FC<Props> = ({ baseURL }) => {
         <h3>You will be redirected to payment page</h3>
 
         <div className="alert alert-primary" role="alert">
-          While making payment use card number 4242 4242 4242 4242 and enter random cvv(3 digit)
+          <div>Test mode — use any future expiry date and any 3-digit CVC.</div>
+          <ul className="mb-0">
+            <li>Visa: 4242 4242 4242 4242</li>
+            <li>Mastercard: 5555 5555 5555 4444</li>
+            <li>Declined card: 4000 0000 0000 0002</li>
+          </ul>
         </div>
 
         {error && (

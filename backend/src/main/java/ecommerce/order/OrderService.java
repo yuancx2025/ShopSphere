@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -48,6 +50,8 @@ import ecommerce.service.CartService;
  */
 @Service
 public class OrderService {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     // A caller must not be able to tell an unknown session from someone else's session.
     private static final String ORDER_NOT_FOUND = "order id is not valid";
@@ -137,21 +141,104 @@ public class OrderService {
         PaymentSession session = paymentGateway.retrieveSession(sessionId);
         Order order = resolveOrder(session);
         if (order == null) {
-            return null;
+            // Throwing makes the webhook return 500 so the provider retries. Returning null here
+            // would let the caller record the event as permanently processed.
+            throw new IllegalStateException("No order matches payment session " + sessionId);
         }
-        if (order.getStatus() == OrderStatus.PAID) {
-            return toDto(reloadWithItems(order.getId()));
-        }
-        if (order.getStatus() == OrderStatus.CANCELLED || order.getStatus() == OrderStatus.FAILED) {
+        if (order.getStatus() != OrderStatus.PENDING) {
+            // Already PAID, CANCELLED, FAILED, or held for review; nothing left to decide.
             return toDto(reloadWithItems(order.getId()));
         }
         if (!session.isPaid()) {
             // Webhook can arrive before Stripe marks the session paid; return current state.
             return toDto(reloadWithItems(order.getId()));
         }
+        if (!matchesOrder(session, order)) {
+            return toDto(transactionTemplate.execute(status -> flagForReview(order.getId())));
+        }
 
         Order paid = transactionTemplate.execute(status -> markPaid(order.getId()));
         return toDto(paid);
+    }
+
+    /**
+     * Rejects a provider success whose amount or currency disagrees with the order we priced.
+     * Without this check a tampered or mismatched session could mark an order PAID for the
+     * wrong money.
+     */
+    private boolean matchesOrder(PaymentSession session, Order order) {
+        long expectedMinor = Math.round(order.getTotalPrice() * 100);
+        Long reportedMinor = session.getAmountTotalMinor();
+        String expectedCurrency = paymentGateway.expectedCurrency();
+        String reportedCurrency = session.getCurrency();
+
+        boolean amountMatches = reportedMinor != null && reportedMinor.longValue() == expectedMinor;
+        boolean currencyMatches = reportedCurrency != null && reportedCurrency.equalsIgnoreCase(expectedCurrency);
+        if (amountMatches && currencyMatches) {
+            return true;
+        }
+
+        log.error(
+                "Payment mismatch for order {} session {}: expected {} {} but provider reported {} {} (raw status {})",
+                order.getId(),
+                session.getSessionId(),
+                expectedMinor,
+                expectedCurrency,
+                reportedMinor,
+                reportedCurrency,
+                session.getRawStatus());
+        return false;
+    }
+
+    /**
+     * Server-initiated recovery for an order still PENDING long after its payment session should
+     * have settled, e.g. when webhooks were misconfigured or a delivery was lost. There is no user
+     * in this path, so it is driven by age rather than by a request.
+     *
+     * @param orderId the stale order
+     * @return the status it was moved to, or null when it was left alone
+     */
+    public OrderStatus reconcileStaleOrder(Integer orderId) {
+        Order order = orderRepository.findByIdWithItems(orderId).orElse(null);
+        if (order == null || order.getStatus() != OrderStatus.PENDING) {
+            return null;
+        }
+
+        if (order.getSessionId() == null) {
+            // The session id was never persisted. The caller only passes orders older than the
+            // provider session lifetime, so any session that did get created is now unpayable.
+            log.warn("Releasing stale order {} that never had a payment session attached", orderId);
+            releaseCheckoutByOrderId(orderId, OrderStatus.CANCELLED);
+            return OrderStatus.CANCELLED;
+        }
+
+        PaymentSession session;
+        try {
+            session = paymentGateway.retrieveSession(order.getSessionId());
+        } catch (PaymentException ex) {
+            log.warn("Could not reconcile stale order {}; will retry on the next sweep", orderId, ex);
+            return null;
+        }
+
+        switch (session.getStatus()) {
+            case SUCCEEDED:
+                if (!matchesOrder(session, order)) {
+                    transactionTemplate.execute(status -> flagForReview(orderId));
+                    return OrderStatus.PAYMENT_REVIEW;
+                }
+                log.warn("Reconciliation marked order {} paid; its webhook never arrived", orderId);
+                transactionTemplate.execute(status -> markPaid(orderId));
+                return OrderStatus.PAID;
+            case EXPIRED:
+                releaseCheckoutByOrderId(orderId, OrderStatus.CANCELLED);
+                return OrderStatus.CANCELLED;
+            case FAILED:
+                releaseCheckoutByOrderId(orderId, OrderStatus.FAILED);
+                return OrderStatus.FAILED;
+            default:
+                // CREATED or PROCESSING: still in flight or settling, so keep the reservation.
+                return null;
+        }
     }
 
     /** Restores reserved stock when checkout expires or async payment fails. */
@@ -227,6 +314,9 @@ public class OrderService {
         }
 
         Integer orderId = order.getId();
+        if (!matchesOrder(session, order)) {
+            return toDto(transactionTemplate.execute(status -> flagForReview(orderId)));
+        }
         return toDto(transactionTemplate.execute(status -> markPaid(orderId)));
     }
 
@@ -358,6 +448,20 @@ public class OrderService {
             return null;
         }
         return orderRepository.findByIdWithItems(session.getOrderId()).orElse(null);
+    }
+
+    /**
+     * PENDING → PAYMENT_REVIEW. Deliberately leaves stock reserved: the provider says it took
+     * money, so releasing inventory would be the unsafe direction until a human decides.
+     */
+    private Order flagForReview(Integer orderId) {
+        lockOrder(orderId);
+        Order order = reloadWithItems(orderId);
+        if (order.getStatus() != OrderStatus.PENDING) {
+            return order;
+        }
+        order.setStatus(OrderStatus.PAYMENT_REVIEW);
+        return orderRepository.save(order);
     }
 
     /** PENDING → PAID and clear the cart. Idempotent if already terminal. */

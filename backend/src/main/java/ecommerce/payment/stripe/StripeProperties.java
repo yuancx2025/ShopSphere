@@ -14,14 +14,17 @@ public class StripeProperties {
     private final String secretKey;
     private final String webhookSecret;
     private final String baseUrl;
+    private final String currency;
 
     public StripeProperties(
             @Value("${STRIPE_SECRET_KEY}") String secretKey,
             @Value("${STRIPE_WEBHOOK_SECRET:}") String webhookSecret,
-            @Value("${BASE_URL}") String baseUrl) {
+            @Value("${BASE_URL}") String baseUrl,
+            @Value("${STRIPE_CURRENCY:usd}") String currency) {
         this.secretKey = secretKey;
         this.webhookSecret = webhookSecret;
         this.baseUrl = baseUrl;
+        this.currency = currency == null || currency.isBlank() ? "usd" : currency.trim().toLowerCase();
     }
 
     public String getSecretKey() {
@@ -34,6 +37,11 @@ public class StripeProperties {
 
     public String getBaseUrl() {
         return baseUrl;
+    }
+
+    /** ISO 4217 code sent to Stripe and compared against the provider-reported currency. */
+    public String getCurrency() {
+        return currency;
     }
 
     public long getSessionTtlSeconds() {

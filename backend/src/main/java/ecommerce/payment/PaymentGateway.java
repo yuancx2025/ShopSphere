@@ -17,4 +17,10 @@ public interface PaymentGateway {
 
     /** Minimum charge in smallest currency unit (e.g. 50 = $0.50 USD). */
     long minimumChargeCents();
+
+    /**
+     * ISO 4217 code this gateway prices in, lower-cased. Fulfillment compares it against the
+     * currency the provider reports so a session cannot settle in a cheaper currency.
+     */
+    String expectedCurrency();
 }
