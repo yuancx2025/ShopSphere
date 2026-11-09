@@ -2,7 +2,7 @@
 
 [Roadmap](../README.md) · [Previous sprint](03-elasticsearch-search.md) · [Next sprint](05-rocketmq-workers.md)
 
-**Time** · 2 weeks. **Depends on** · Sprint 1's payment and inventory invariants. Sprint 3 can run in parallel.
+**Time** · 2 weeks. **Depends on** · Sprint 1's payment and inventory invariants. Sprint 3 can run in parallel, but the roadmap recommends doing this sprint first.
 
 ## What to learn
 
@@ -22,7 +22,7 @@
 | Target | How to prove it |
 | --- | --- |
 | Zero missing accepted events or duplicate paid transitions in the test matrix | Submit an identified set of 1,000 signed test deliveries including repeated event IDs. Add distinct events for the same order, race reconciliation, and reconcile accepted IDs, transitions and outbox rows after restart. |
-| P95 webhook acknowledgment under 150 ms at an initial 20 deliveries/sec | Compare the existing synchronous handler and durable inbox under the same signed input and fake provider timing. Report accepted acknowledgment and received-to-processed P95 separately. |
+| P95 webhook acknowledgment under 150 ms at an initial 20 deliveries/sec | Compare the existing synchronous handler and durable inbox under the same signed input and fake provider timing. Report accepted acknowledgment and received-to-processed P95 separately. The existing handler calls Stripe during the request, so record the injected provider delay with the result. |
 | Durable behavior at the commit boundaries | Fail before inbox commit, after inbox acknowledgment, and after order/outbox commit. Verify the handler and worker can resume and the first paid transition creates one outbox row. |
 
 ## Implementation PRs
@@ -38,6 +38,6 @@
 
 **Acknowledgment version.** “Reduced Stripe webhook acknowledgment P95 from [A] ms to [B] ms at [R] deliveries/sec in a controlled test by persisting events before asynchronous processing.”
 
-Choose the acknowledgment version only after measuring both versions with the same provider behavior. Keep payment-processing lag and the failure matrix as supporting evidence.
+Lead with the reliability version. With a fake provider, the old handler's acknowledgment time mostly reflects the delay you inject, so choose the acknowledgment version only after measuring both versions with the same provider behavior, and state that delay. Keep payment-processing lag and the failure matrix as supporting evidence.
 
 [Stripe webhooks](https://docs.stripe.com/webhooks)

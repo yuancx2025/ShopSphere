@@ -2,18 +2,23 @@
 
 [Roadmap](../README.md) · [Previous sprint](00-benchmark-foundation.md) · [Next sprint](02-redis-cache.md)
 
-**Time** · 1–2 weeks. **Depends on** · Sprint 0's fixtures and measurement harness.
+**Status** · Implemented; results and findings in the [Sprint 1 report](../reports/sprint-01.md). The new burst test showed the pre-Sprint 1 checkout oversold (100 of 100 reservations accepted for 20 units), so "Validated MySQL inventory locking" below no longer applies: the lock was taken but did not protect the decrement.
+
+**Time** · 2–3 weeks. The backend has only a context-load test, so this sprint also builds the MySQL integration-test harness. **Depends on** · Sprint 0's fixtures and measurement harness.
 
 ## What to learn
 
 - Trace `OrderService` from stock reservation and session creation through payment fulfillment, reconciliation, and stock release. Identify where the order lock and product-row locks serialize state changes.
 - Understand exact monetary representation, stable idempotency keys, ambiguous provider timeouts, and why a paid session needs amount, currency and order validation.
+- Recognize a lost update: a read-modify-write that saves an absolute value without a lock or version check. Explain why today's admin product edit is one.
 - Read `EXPLAIN ANALYZE`, recognize unnecessary rows examined and JPA N+1 access, and choose a composite index that matches the filter and sort. Understand stable pagination and why a change in response size is a separate experiment.
 
 ## What to implement
 
-- **Checkout.** Work through `OrderService`, the repositories, `PaymentGateway` and its Stripe adapter. Add a deterministic fake gateway for tests. Persist exact amounts through a Flyway migration and validate legacy rows and rounding before switching reads and writes. Confirm the paid provider session against the expected order, amount, and currency. Persist a stable checkout-attempt key and bind it to the user and order. Retry the same attempt with the same provider idempotency key. Resolve unknown create-session outcomes through retry or reconciliation before releasing stock. Define an explicit review outcome for a late confirmed payment after stock release.
-- **Correctness tests.** Use MySQL integration tests with separate transactions for contenders. Cover simultaneous users on one SKU, repeated checkout requests, conflicting reconcile and webhook paths, invalid payment details, and expiration or late payment. Exercise existing row-lock behavior before attributing improvements to a new mechanism.
+- **Test harness.** Add Testcontainers MySQL using the same 8.0 image as Compose, and a base integration test that runs the Flyway migrations. Start contenders on separate threads with their own transactions and release them together with a latch. Hikari's default pool of 10 limits how many contenders reach MySQL at once, so record the pool size with every contention result.
+- **Checkout.** Work through `OrderService`, the repositories, `PaymentGateway` and its Stripe adapter. Add a deterministic fake gateway for tests. Persist exact amounts as integer cents or `DECIMAL` through a Flyway migration and validate legacy rows and rounding before switching reads and writes. Today `reserveFromCart` rounds the `double` order total once while `toCheckoutCommand` rounds each line item, so the amount sent to Stripe can differ from the order total by a cent. Switch to exact amounts before turning on amount validation. Confirm the paid provider session against the expected order, amount, and currency. Persist a stable checkout-attempt key and bind it to the user and order. Retry the same attempt with the same provider idempotency key. Resolve unknown create-session outcomes through retry or reconciliation before releasing stock. Define an explicit review or refund outcome for a late confirmed payment after stock release. Today `fulfillCheckout` returns without action when a paid session belongs to a cancelled order, which leaves a charge with no order.
+- **Admin stock writes.** `ProductService.updateProduct` builds a new `Product` and saves the admin form's stock value without a lock, and a missing value becomes 0. An edit submitted while checkout reserves units writes the old stock back, which can oversell. Load and lock the existing row, update only the editable fields, and change stock through an explicit adjustment (a delta) or a version check.
+- **Correctness tests.** Use MySQL integration tests with separate transactions for contenders. Cover simultaneous users on one SKU, repeated checkout requests, an admin edit racing a reservation, conflicting reconcile and webhook paths, invalid payment details, and expiration or late payment. Exercise existing row-lock behavior before attributing improvements to a new mechanism.
 - **Catalog API.** Add a bounded paginated endpoint, for example `GET /product/page?categoryId=1&size=20`, and migrate React catalog callers to it. Keep the existing `/product/` response contract available during the migration. Use stable ordering with a unique ID tie-breaker, cap page size, and return only the fields the page needs.
 - **MySQL.** Inspect the existing category/name indexes in Flyway V1. Capture a baseline plan on the new paginated query, then test a projection and a composite index that matches the selected query. Use a new migration and validate the access path and query results on realistic data.
 
@@ -22,6 +27,7 @@
 | Target | How to prove it |
 | --- | --- |
 | Zero oversells or negative stock across three 100-attempt bursts | Use 100 distinct seeded users, one unit per request, stock of 20, and no concurrent release during the initial burst. With the healthy fake provider, assert exactly 20 accepted reservations and 80 explicit stock rejections. Reconcile initial stock against available, reserved, and sold units. |
+| Admin edits cannot undo reservations | Race admin stock edits against concurrent reservations. Verify that available, reserved and sold units still reconcile with initial stock plus explicit adjustments. |
 | Correct payment and release behavior | Run deterministic duplicate, timeout, amount/currency mismatch, expiration, and late-payment cases. Verify terminal outcomes and released stock once at the database boundary. |
 | Fewer rows examined or lower latency on an equivalent paginated query | Compare the same query contract and seed before and after the index or projection change. Aim for at least 30% fewer rows examined on the selected bottleneck query. If the optimizer already uses a good access path, document the evidence and keep the smaller change. |
 | Bounded list response | Report returned bytes and route P95 for the legacy full list and the new 20-item endpoint as a separate pagination comparison. Carry the paginated MySQL baseline into Sprint 2. |
@@ -30,14 +36,14 @@
 
 | PR | Scope | Merge gate |
 | --- | --- | --- |
-| 03 · `fix/checkout-correctness` | Fake gateway, MySQL concurrency tests, exact amounts and guarded payment transitions | Tests cover duplicate, mismatched, late and ambiguous payment paths. Inventory reconciles after contention and release. |
+| 03 · `fix/checkout-correctness` | Testcontainers harness, fake gateway, MySQL concurrency tests, exact amounts, safe admin stock updates and guarded payment transitions | Tests cover duplicate, mismatched, late and ambiguous payment paths. Inventory reconciles after contention, admin edits and release. |
 | 04 · `perf/database-queries` | Paginated API, React adoption, SQL tuning and Flyway changes if justified | Pagination and legacy compatibility checks pass. PR includes comparable query plans, payload sizes and k6 summaries. |
 
 ## Résumé wording
 
 **SQL result.** “Optimized Spring Boot catalog queries with bounded pagination and MySQL indexes, reducing rows examined by [X]% for [filter/sort] across [N] seeded products.” Use the indexing wording only if the index was implemented and the query plans support the result.
 
-**Checkout result.** “Hardened Stripe checkout with exact-amount validation and MySQL row-locked inventory reservations, observing zero oversells across [N] synthetic checkout attempts.” If the work mainly verified the existing locking mechanism, use “Validated MySQL inventory locking” in place of language that implies it was newly implemented.
+**Checkout result.** “Hardened Stripe checkout with exact-amount validation and MySQL row-locked inventory reservations, observing zero oversells across [N] synthetic checkout attempts.” If the work mainly verified the existing locking mechanism, use “Validated MySQL inventory locking” in place of language that implies it was newly implemented. Once the admin-edit fix lands, “closed a lost-update path in admin stock edits” is a concrete addition that interviewers can probe.
 
 For interviews, keep the invariant query and one before/after query plan handy. Explain how you isolated the index effect from the smaller response payload.
 
