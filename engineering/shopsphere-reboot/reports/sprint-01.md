@@ -22,7 +22,7 @@ Findings 1–3 are fixed and covered by tests that fail on the old code (finding
 | Plan item | Implementation |
 | --- | --- |
 | Testcontainers MySQL harness | `MySqlIntegrationTest` (MySQL 8.0.43, Flyway-migrated, shared container), `Contenders` (one thread and transaction per contender, released by a latch), `TestData`. Hikari pool 10, printed with every contention result. CI no longer needs a MySQL service. |
-| Deterministic fake gateway | `payment/fake/FakePaymentGateway` (`payment.provider=fake`): idempotent on the key, computes the amount from line items like Stripe, scriptable `REJECT`, `TIMEOUT_BEFORE_CREATE`, `TIMEOUT_AFTER_CREATE`, late payment and tampering. Refuses the `prod` profile. Also used by the bench stack. |
+| Deterministic fake gateway | `payment/fake/FakePaymentGateway` (`payment.provider=fake`): idempotent on the key, computes the amount from line items like Stripe, scriptable `REJECT` (the only scripted failure), late payment and tampering. Provider timeouts are not modeled (deferred). Refuses the `prod` profile. Also used by the bench stack. |
 | Exact amounts | Flyway `V4__Exact_Money`: `price_cents`, `unit_price_cents`, `total_cents`, `currency`. Legacy rows are backfilled and validated with temporary CHECK constraints, so a sub-cent legacy price fails the migration by name. Legacy DOUBLE columns stay and are dual-written for rollback. API prices are `BigDecimal` with at most 2 decimals. |
 | Validate the paid session | `applyPaidSession` checks order id, session id, amount and currency. A mismatch moves the order to `NEEDS_REVIEW` with a `review_reason` instead of `PAID`. |
 | Stable checkout-attempt key | `Idempotency-Key` header, unique per `(user_id, checkout_key)` (V5). A replay returns the same order and session without calling the provider. The provider key is `shopsphere-checkout-<orderId>-<key>`, and every session parameter, including `expires_at`, is derived from the stored order. |
@@ -51,7 +51,7 @@ All runs: local Docker stack `shopsphere-bench-s1`, fixture v2 (seed 20261109, 1
 | `CheckoutBurstTest`: 100 shoppers, 20 units, 3 bursts (Testcontainers MySQL, threads + latch) | **100 accepted, 0 rejected, stock 9–10** in every burst | 20 accepted, 80 rejected, stock 0, held 20, in every burst |
 | `bench.py burst`: same shape over HTTP through k6 | not runnable (no fake provider) | **3/3 trials pass every invariant**: 20 accepted, 80 × 409, 0 unexpected, stock 0, held 20. p95 0.87–1.20 s while 100 requests queue on one hot row (Hikari pool 10) |
 | Admin edits racing 20 reservations (`AdminStockTest`) | lost update possible (absolute stock save) | stock 0, held 20; adjustments race keeps `initial + adjustments = available + held` |
-| Payment paths (`PaymentOutcomeTest`, 14 cases) | late payment after release ignored; no amount or currency check | duplicate, concurrent, mismatched, expired, late and rejected cases all end in the expected status with stock released at most once |
+| Payment paths (`PaymentOutcomeTest`: 10 scenarios, 14 runs because the expiry-vs-payment race repeats 5 times) | late payment after release ignored; no amount or currency check | duplicate, concurrent, mismatched, expired, late and rejected cases all end in the expected status with stock released at most once |
 
 ### Query plans (target: ≥30% fewer rows examined on the selected query) — `bench.py explain`
 
@@ -99,6 +99,7 @@ python3 benchmarks/bench.py compare <list run> <page run>
 ## Known limits and follow-ups
 
 - `NEEDS_REVIEW` has no operator tooling yet (refund or manual fulfill). A held reservation on an amount-mismatch order stays held until someone acts.
+- Payment work is deferred for the rest of the roadmap; the follow-ups are listed on the [Sprint 4 page](../sprints/04-payment-events.md).
 - Deliberately left out to keep the project simple: a background reconciler for lost webhooks, special handling for provider timeouts, a stock-adjustment history table, and a price-descending sort.
 - The legacy DOUBLE money columns are still written. Drop them in a later migration once no rollback target reads them.
 - The price sort without a category is rejected rather than indexed.

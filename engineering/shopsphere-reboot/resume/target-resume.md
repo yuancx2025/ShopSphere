@@ -4,6 +4,8 @@
 
 These are future project entries for a one-page software engineering résumé. Bracketed fields are placeholders. Copy a bullet after its feature and benchmark or correctness test are complete. Use a shorter technology line when the bullets already name the supporting tools.
 
+> Payment work (Sprint 4) is deferred. Skip payment-correctness bullets such as "one paid transition per order" until it is done; inventory and catalog-event bullets do not depend on it.
+
 ## Choosing the lead bullet
 
 Correctness results (zero oversells, one paid transition per order, zero duplicate confirmations, a tested rollback) are the most likely to hold and the easiest to defend. Every version below opens with the Redis result, which is the least certain: it needs stock off the cached read path and a comparison near the uncached variant's capacity (see [Sprint 2](../sprints/02-redis-cache.md)). If the cache gain is modest, lead with an inventory or payment correctness bullet. Rates in the tens per second read as small, so quote them only with the bottleneck explanation in the report.

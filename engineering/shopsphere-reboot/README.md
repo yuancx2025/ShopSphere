@@ -1,6 +1,6 @@
 # ShopSphere reboot
 
-An implementation plan for the existing Java/Spring Boot, React, and MySQL application. It covers **8 sprints and 15 implementation PRs**, estimated at **18–24 weeks at 15–20 hours per week**. The sprint ranges below add up to 13–19 weeks; the rest leaves room for benchmark reruns, debugging, and the test harness Sprint 1 builds from scratch. The first checkpoint is Sprints 0–2, which produce a working benchmark harness and a controlled Redis/MySQL comparison. Sprints 0–2 plus Sprint 4 already make a complete portfolio entry if later sprints slip. The final portfolio package combines catalog performance, checkout and event reliability, and a reproducible deployment.
+An implementation plan for the existing Java/Spring Boot, React, and MySQL application. It covers **7 active sprints and 13 implementation PRs**, estimated at **16–22 weeks at 15–20 hours per week**, with payment work deferred (see below). The active sprint ranges add up to 11–17 weeks; the rest leaves room for benchmark reruns, debugging, and the test harness Sprint 1 builds from scratch. The first checkpoint is Sprints 0–2, which produce a working benchmark harness and a controlled Redis/MySQL comparison. Sprints 0–3 already make a complete portfolio entry if later sprints slip. The final portfolio package combines catalog performance, inventory correctness, event reliability, and a reproducible deployment.
 
 Every target below is provisional. Record a baseline, choose a passing threshold before comparing versions, and publish the observed result with its workload and environment. The résumé drafts describe future milestones.
 
@@ -18,8 +18,8 @@ Paths inside the sprint pages identify existing code or proposed additions.
 | [1 · MySQL and checkout correctness](sprints/01-mysql-checkout.md) | 2–3 weeks | 03–04 | Inventory invariants, equivalent-query plans, payload-size change |
 | [2 · Redis catalog cache](sprints/02-redis-cache.md) | 1–2 weeks | 05–06 | Catalog P95, SQL reads per successful request, hit ratio |
 | [3 · Elasticsearch search](sprints/03-elasticsearch-search.md) | 2–3 weeks | 07–08 | NDCG@10, search P95, indexing lag |
-| [4 · Stripe inbox and transactional outbox](sprints/04-payment-events.md) | 2 weeks | 09–10 | Webhook acknowledgment P95, deduplicated transitions, restart recovery |
-| [5 · RocketMQ and workers](sprints/05-rocketmq-workers.md) | 2–3 weeks | 11–12 | Events/sec, end-to-end lag, backlog recovery, duplicate effects |
+| ~~[4 · Stripe inbox and transactional outbox](sprints/04-payment-events.md)~~ **Deferred** | — | 09–10 | Payment work is out of scope for now |
+| [5 · RocketMQ and workers](sprints/05-rocketmq-workers.md) | 2–3 weeks | 11–12 | Catalog events/sec, end-to-end lag, backlog recovery, duplicate effects |
 | [6 · Traffic protection](sprints/06-traffic-protection.md) | 1–2 weeks | 13 | Accepted goodput and latency under bursts, 429s, errors |
 | [7 · AWS and final evaluation](sprints/07-aws-final-evaluation.md) | 2 weeks | 14–15 | Deployment smoke/rollback checks and the final capacity report |
 
@@ -28,7 +28,8 @@ PR numbers above are planning labels. Each sprint page contains the scope and me
 ## Scope and dependencies
 
 - **First release.** Use MySQL, Redis, k6, Spring Boot Actuator/Micrometer, and an optional local Prometheus/Grafana profile. Preserve the Java/Spring Boot application and React client.
-- **Search and reliability.** Elasticsearch is the search projection. MySQL owns catalog, orders, and inventory. Use the Stripe inbox and transactional order outbox before adding RocketMQ for post-payment work. Search can proceed after the paginated catalog is stable. Payment inbox work depends on checkout correctness and can proceed alongside search. Prefer finishing Sprint 4 before Sprint 3: it builds on the Sprint 1 checkout code while it is fresh, and its correctness evidence holds up better than a relevance score.
+- **Search and events.** Elasticsearch is the search projection. MySQL owns catalog, orders, and inventory. Sprint 3's catalog indexing-job table is the transactional outbox; Sprint 5 publishes it to RocketMQ as `ProductChanged` for the search indexer and the Redis cache invalidator. Search can proceed after the paginated catalog is stable.
+- **Payments are deferred.** Sprint 4 (Stripe inbox and order outbox) and any new payment tests wait until the catalog, search, events and deployment work is done. Later sprints use the fake payment gateway, and "checkout" means the stock reservation (`POST /order/create-checkout-session`), whose inventory invariants stay tested. Payment follow-ups from Sprint 1 are listed on the [Sprint 4 page](sprints/04-payment-events.md).
 - **Overload and deployment.** Add the shared Redis limiter after the Redis integration. Use EC2 and Docker Compose for a short-lived staging demo, with a smaller service profile if needed. Keep the full test matrix local unless a cloud run warrants the expense.
 - **Deferred scope.** Revisit sharding, Snowflake IDs, Spring Cloud Gateway, OpenFeign, Sentinel, Kubernetes, or managed search only when there is a concrete need to measure. RocketMQ is the selected broker for the core build.
 

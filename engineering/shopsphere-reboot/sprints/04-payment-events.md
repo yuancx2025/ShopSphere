@@ -2,7 +2,15 @@
 
 [Roadmap](../README.md) · [Previous sprint](03-elasticsearch-search.md) · [Next sprint](05-rocketmq-workers.md)
 
-**Time** · 2 weeks. **Depends on** · Sprint 1's payment and inventory invariants. Sprint 3 can run in parallel, but the roadmap recommends doing this sprint first.
+**Status** · **Deferred.** Payment work is out of scope until Sprints 5–7 are done; no sprint depends on it any more (Sprint 5 uses catalog events instead of `OrderPaid`). The plan below is kept for when it resumes.
+
+**Deferred payment follow-ups from Sprint 1**
+- Ambiguous provider outcomes: a create-session timeout currently cancels the attempt and releases stock. Add retry-with-same-key or reconciliation if needed, plus fake-gateway timeout behaviors to test it.
+- A background reconciler for lost webhooks (today the webhook and the success page's reconcile call apply payments).
+- Operator handling for `NEEDS_REVIEW` orders (refund or manual fulfillment).
+- Any new payment tests or benchmarks. The existing `PaymentOutcomeTest` stays as a regression suite.
+
+**Time** · 2 weeks. **Depends on** · Sprint 1's payment and inventory invariants.
 
 ## What to learn
 
