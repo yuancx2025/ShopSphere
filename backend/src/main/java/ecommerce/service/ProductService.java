@@ -3,8 +3,14 @@ package ecommerce.service;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import static ecommerce.catalog.CatalogCacheConfig.CATALOG_PAGE;
+import static ecommerce.catalog.CatalogCacheConfig.PRODUCT_DETAIL;
 
 import ecommerce.common.Money;
 import ecommerce.dto.product.ProductDto;
@@ -36,8 +42,9 @@ public class ProductService {
         return productDtos;
     }
 
-    /** Creates a product with its initial stock. */
+    /** Creates a product with its initial stock. A new product can appear on any cached catalog page. */
     @Transactional
+    @CacheEvict(cacheNames = CATALOG_PAGE, allEntries = true)
     public Product addProduct(ProductDto productDto, Category category) {
         Product product = new Product();
         product.setCategory(category);
@@ -52,8 +59,12 @@ public class ProductService {
     /**
      * Updates the descriptive fields of an existing product under a row lock. Stock is never written here
      * (and the column is not updatable through JPA), so an edit cannot undo concurrent reservations.
+     * The cached detail and every cached page are evicted after the commit.
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = PRODUCT_DETAIL, key = "#productId"),
+            @CacheEvict(cacheNames = CATALOG_PAGE, allEntries = true)})
     public void updateProduct(Integer productId, ProductUpdateDto update, Category category)
             throws ProductNotExistException {
         Product product = productRepository.findByIdForUpdate(productId)
@@ -70,6 +81,9 @@ public class ProductService {
      * instead of overwriting them. Rejects a change that would make stock negative.
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = PRODUCT_DETAIL, key = "#productId"),
+            @CacheEvict(cacheNames = CATALOG_PAGE, allEntries = true)})
     public StockAdjustmentResponseDto adjustStock(Integer productId, int delta) throws ProductNotExistException {
         if (delta == 0) {
             throw new BadRequestException("delta must not be zero");
@@ -81,6 +95,17 @@ public class ProductService {
             throw new InsufficientStockException("Adjustment of " + delta + " would make stock negative");
         }
         return new StockAdjustmentResponseDto(productId, delta, productRepository.currentStock(productId));
+    }
+
+    /**
+     * The body of {@code GET /product/{id}}, cached by id when the Redis cache is on. The cached copy includes
+     * {@code stock} for display, so it can lag checkout reservations by up to the TTL; admin edits evict it.
+     * Checkout never reads it: reservations use a guarded UPDATE on MySQL.
+     */
+    @Cacheable(cacheNames = PRODUCT_DETAIL, key = "#productId")
+    @Transactional(readOnly = true)
+    public ProductDto getProductDetail(Integer productId) throws ProductNotExistException {
+        return new ProductDto(getProductById(productId));
     }
 
     @Transactional(readOnly = true)

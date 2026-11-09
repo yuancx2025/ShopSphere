@@ -2,6 +2,7 @@ package ecommerce.catalog;
 
 import java.util.List;
 
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import ecommerce.dto.product.ProductCardDto;
@@ -22,8 +23,14 @@ public class CatalogService {
     }
 
     /**
+     * First pages (no cursor) are cached by their request parameters when the Redis cache is on: they take most
+     * of the traffic, while deeper cursors are spread too thin to hit often. Any product write clears this cache.
+     *
      * @param size requested page size; values above {@link #MAX_PAGE_SIZE} are capped, values below 1 rejected
      */
+    @Cacheable(cacheNames = CatalogCacheConfig.CATALOG_PAGE,
+            key = "#categoryId + ':' + #sortParam + ':' + #size",
+            condition = "#cursorParam == null || #cursorParam.isBlank()")
     public ProductPageDto page(Integer categoryId, String sortParam, Integer size, String cursorParam) {
         CatalogSort sort = CatalogSort.fromParam(sortParam);
         if (sort.byPrice() && categoryId == null) {

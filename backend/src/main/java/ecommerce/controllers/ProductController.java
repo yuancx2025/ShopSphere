@@ -66,7 +66,7 @@ public class ProductController {
     @GetMapping("/{productID}")
     public ResponseEntity<ProductDto> getProduct(@PathVariable("productID") Integer productID)
             throws ProductNotExistException {
-        return new ResponseEntity<>(new ProductDto(productService.getProductById(productID)), HttpStatus.OK);
+        return new ResponseEntity<>(productService.getProductDetail(productID), HttpStatus.OK);
     }
 
     @PostMapping("/add")
