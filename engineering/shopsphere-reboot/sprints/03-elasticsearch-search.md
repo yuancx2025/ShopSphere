@@ -1,8 +1,8 @@
 # Sprint 3 · Elasticsearch search
 
-[Roadmap](../README.md) · [Previous sprint](02-redis-cache.md) · [Next sprint](04-payment-events.md)
+[Roadmap](../README.md) · [Previous sprint](02-redis-cache.md) · [Next sprint](05-rocketmq-workers.md)
 
-**Time** · 2–3 weeks. **Depends on** · A stable paginated catalog. The payment work can proceed independently, and the roadmap recommends finishing Sprint 4 first.
+**Time** · 2–3 weeks. **Depends on** · A stable paginated catalog. Its indexing-job table becomes Sprint 5's outbox.
 
 ## What to learn
 
