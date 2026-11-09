@@ -31,6 +31,20 @@ services:
     cpus: ${BENCH_MYSQL_CPUS:-2}
     mem_limit: ${BENCH_MYSQL_MEM:-1g}
 
+  # Sprint 2 catalog cache. Always running so `bench.py cache stop|start` can inject an outage; the backend only
+  # uses it when BENCH_CACHE=redis. No persistence: a restart is a cold cache.
+  redis:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb",
+              "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    cpus: ${BENCH_REDIS_CPUS:-1}
+    mem_limit: ${BENCH_REDIS_MEM:-256m}
+
   backend:
     build:
       context: ../backend
@@ -38,8 +52,14 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       SPRING_PROFILES_ACTIVE: bench
+      # A/B switch: none (every read goes to MySQL) or redis (cache-aside). Set by `bench.py up --cache`.
+      SPRING_CACHE_TYPE: ${BENCH_CACHE:-none}
+      CATALOG_CACHE_TTL: ${BENCH_CACHE_TTL:-60s}
+      SPRING_DATA_REDIS_HOST: redis
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/shopsphere_bench
       SPRING_DATASOURCE_USERNAME: shopsphere
       SPRING_DATASOURCE_PASSWORD: bench
