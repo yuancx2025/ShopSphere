@@ -1,0 +1,99 @@
+# Dedicated benchmark stack. It runs as its own Compose project, with its own
+# database volume and no fixed container names, so it never touches the dev
+# stack in ../docker-compose.yml. Drive it with benchmarks/bench.py.
+#
+# Resource limits are part of the benchmark contract: keep them fixed for any
+# A/B comparison and record them (bench.py copies them into each run manifest).
+#
+# bench.py passes -p $BENCH_PROJECT, so two worktrees can each run their own stack (with
+# their own database volume) by setting BENCH_PROJECT and the BENCH_*_PORT variables.
+name: shopsphere-bench
+
+services:
+  mysql:
+    image: mysql:8.0.43
+    environment:
+      MYSQL_ROOT_PASSWORD: bench-root
+      MYSQL_DATABASE: shopsphere_bench
+      MYSQL_USER: shopsphere
+      MYSQL_PASSWORD: bench
+    command:
+      - --innodb-buffer-pool-size=256M
+      - --performance-schema=ON
+      - --max-connections=200
+    volumes:
+      - bench_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=bench-root mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    cpus: ${BENCH_MYSQL_CPUS:-2}
+    mem_limit: ${BENCH_MYSQL_MEM:-1g}
+
+  backend:
+    build:
+      context: ../backend
+    image: ${BENCH_BACKEND_IMAGE:-shopsphere-backend:bench}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: bench
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/shopsphere_bench
+      SPRING_DATASOURCE_USERNAME: shopsphere
+      SPRING_DATASOURCE_PASSWORD: bench
+      STRIPE_SECRET_KEY: sk_test_benchmark_placeholder
+      STRIPE_WEBHOOK_SECRET: whsec_benchmark_placeholder
+      JWT_SECRET: ShopSphereBenchmarkSecretKeyMustBeAtLeast256BitsLong!!
+      # Below 2 CPUs or ~1.8 GB the JVM silently picks SerialGC, so choose G1 explicitly.
+      JAVA_TOOL_OPTIONS: -XX:+UseG1GC -XX:MaxRAMPercentage=70
+    ports:
+      - "127.0.0.1:${BENCH_BACKEND_PORT:-18080}:8080"
+    healthcheck:
+      # The bench profile moves actuator to the internal management port.
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+    cpus: ${BENCH_BACKEND_CPUS:-2}
+    mem_limit: ${BENCH_BACKEND_MEM:-1536m}
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - bench_prometheus:/prometheus
+    ports:
+      - "127.0.0.1:${BENCH_PROMETHEUS_PORT:-9090}:9090"
+    cpus: 0.5
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    profiles: ["observability"]
+    depends_on:
+      - prometheus
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: bench-admin
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/shopsphere-benchmark.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${BENCH_GRAFANA_PORT:-3001}:3000"
+    cpus: 0.5
+    mem_limit: 384m
+
+volumes:
+  bench_mysql:
+  bench_prometheus:

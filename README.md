@@ -132,6 +132,8 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed configuration.
 - [API Documentation](docs/API.md) - Complete REST API reference
 - [Setup Guide](docs/SETUP.md) - Installation and configuration
 - [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment strategies
+- [Benchmarks](benchmarks/README.md) - Reproducible k6 load tests, fixtures and Grafana dashboard
+- [Engineering roadmap](engineering/shopsphere-reboot/README.md) - Planned sprints and benchmark contract
 
 ## Key API Endpoints
 

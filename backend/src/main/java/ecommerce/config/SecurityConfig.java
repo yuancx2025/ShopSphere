@@ -52,6 +52,8 @@ public class SecurityConfig {
                         .requestMatchers("/user/signup", "/user/signIn").permitAll()
                         .requestMatchers(HttpMethod.GET, "/product/**", "/category/**").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                        // Only exposed by the bench profile, and only on its internal management port.
+                        .requestMatchers("/actuator/prometheus").permitAll()
                         .requestMatchers(
                                 "/swagger-ui/**",
                                 "/swagger-ui.html",
