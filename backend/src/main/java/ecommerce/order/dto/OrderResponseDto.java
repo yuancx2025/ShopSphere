@@ -1,17 +1,24 @@
 package ecommerce.order.dto;
 
+import java.math.BigDecimal;
+
 import java.util.Date;
 import java.util.List;
 
 import ecommerce.order.model.OrderStatus;
+import ecommerce.order.model.ReviewReason;
 
 public class OrderResponseDto {
 
     private Integer id;
-    private Double totalPrice;
+    /** Decimal dollars derived from exact cents. */
+    private BigDecimal totalPrice;
+    private String currency;
     private Date createdDate;
     private String sessionId;
     private OrderStatus status;
+    /** Set when status is NEEDS_REVIEW. */
+    private ReviewReason reviewReason;
     private List<OrderItemResponseDto> orderItems;
 
     public OrderResponseDto() {
@@ -25,12 +32,28 @@ public class OrderResponseDto {
         this.id = id;
     }
 
-    public Double getTotalPrice() {
+    public BigDecimal getTotalPrice() {
         return totalPrice;
     }
 
-    public void setTotalPrice(Double totalPrice) {
+    public void setTotalPrice(BigDecimal totalPrice) {
         this.totalPrice = totalPrice;
+    }
+
+    public String getCurrency() {
+        return currency;
+    }
+
+    public void setCurrency(String currency) {
+        this.currency = currency;
+    }
+
+    public ReviewReason getReviewReason() {
+        return reviewReason;
+    }
+
+    public void setReviewReason(ReviewReason reviewReason) {
+        this.reviewReason = reviewReason;
     }
 
     public Date getCreatedDate() {

@@ -26,8 +26,13 @@ public class OrderItem {
     @Column(name = "quantity")
     private @NotNull int quantity;
 
-    @Column(name = "price")
-    private @NotNull double price;
+    /** Unit price in cents at reservation time. */
+    @Column(name = "unit_price_cents", nullable = false)
+    private long unitPriceCents;
+
+    /** Legacy DOUBLE column kept by Flyway V4 for rollback safety; derived from {@link #unitPriceCents}. */
+    @Column(name = "price", nullable = false)
+    private double legacyPrice;
 
     @Column(name = "product_name")
     private @NotNull String productName;
@@ -46,10 +51,10 @@ public class OrderItem {
 
     public OrderItem(){}
 
-    public OrderItem(Order order, @NotNull Product product, @NotNull int quantity, @NotNull double price) {
+    public OrderItem(Order order, @NotNull Product product, int quantity, long unitPriceCents) {
         this.product = product;
         this.quantity = quantity;
-        this.price = price;
+        setUnitPriceCents(unitPriceCents);
         this.productName = product.getName();
         this.order = order;
         this.createdDate = new Date();
@@ -72,12 +77,17 @@ public class OrderItem {
         this.quantity = quantity;
     }
 
-    public double getPrice() {
-        return price;
+    public long getUnitPriceCents() {
+        return unitPriceCents;
     }
 
-    public void setPrice(double price) {
-        this.price = price;
+    public void setUnitPriceCents(long unitPriceCents) {
+        this.unitPriceCents = unitPriceCents;
+        this.legacyPrice = unitPriceCents / 100.0;
+    }
+
+    public long getLineTotalCents() {
+        return Math.multiplyExact(unitPriceCents, (long) quantity);
     }
 
     public String getProductName() {

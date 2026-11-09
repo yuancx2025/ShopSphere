@@ -7,6 +7,7 @@ import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import ecommerce.common.Money;
 import ecommerce.dto.cart.AddToCartDto;
 import ecommerce.dto.cart.CartDto;
 import ecommerce.dto.cart.CartItemDto;
@@ -44,15 +45,18 @@ public class CartService {
     public CartDto listCartItems(User user) {
         List<Cart> cartList = cartRepository.findAllByUserOrderByCreatedDateDesc(user);
         List<CartItemDto> cartItems = new ArrayList<>();
+        long totalCents = 0;
         for (Cart cart : cartList) {
             cartItems.add(new CartItemDto(cart));
+            totalCents = Math.addExact(totalCents,
+                    Math.multiplyExact(cart.getProduct().getPriceCents(), (long) cart.getQuantity()));
         }
+        return new CartDto(cartItems, Money.fromCents(totalCents));
+    }
 
-        double totalCost = 0;
-        for (CartItemDto cartItemDto : cartItems) {
-            totalCost += cartItemDto.getProduct().getPrice() * cartItemDto.getQuantity();
-        }
-        return new CartDto(cartItems, totalCost);
+    /** Cart entities for checkout, which needs the products themselves (runs in the caller's transaction). */
+    public List<Cart> cartLines(User user) {
+        return cartRepository.findAllByUserOrderByCreatedDateDesc(user);
     }
 
     @Transactional
