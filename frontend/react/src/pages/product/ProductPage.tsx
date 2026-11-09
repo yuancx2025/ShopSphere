@@ -1,18 +1,12 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import ProductBox from '../../components/product/ProductBox';
-import { Product } from '../../types';
+import { useProductPages } from '../../utils/catalog';
 
-interface Props {
-  products: Product[] | null;
-  loading: boolean;
-}
-
-const ProductPage: React.FC<Props> = ({ products, loading }) => {
+const ProductPage: React.FC = () => {
   const location = useLocation();
   const onAdminPage = location.pathname.startsWith('/admin/product');
-
-  if (loading || !products) return <div className="text-center p-5">Loading...</div>;
+  const { items, hasMore, loading, error, loadMore } = useProductPages({ size: 20 });
 
   return (
     <div className="container">
@@ -27,11 +21,22 @@ const ProductPage: React.FC<Props> = ({ products, loading }) => {
         </div>
       </div>
       <div className="row">
-        {products.map((product) => (
+        {error && <div className="col-12 text-center p-3 text-danger">{error}</div>}
+        {items.map((product) => (
           <div key={product.id} className="col-md-6 col-xl-4 col-12 pt-3  justify-content-around d-flex">
             <ProductBox product={product} />
           </div>
         ))}
+      </div>
+      <div className="row">
+        <div className="col-12 text-center p-4">
+          {loading && <span>Loading...</span>}
+          {!loading && hasMore && (
+            <button type="button" className="btn btn-outline-secondary" onClick={loadMore}>
+              Load more
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -16,7 +16,31 @@ export interface Product {
   stock: number;
 }
 
-export type OrderStatus = 'PENDING' | 'PAID' | 'CANCELLED' | 'FAILED';
+export type CatalogSort = 'id' | 'price_asc';
+
+/** GET /product/page response. nextCursor is null on the last page. */
+export interface ProductPage {
+  items: Product[];
+  nextCursor: string | null;
+  size: number;
+  sort: CatalogSort;
+  categoryId: number | null;
+}
+
+export interface StockAdjustmentResult {
+  productId: number;
+  delta: number;
+  stock: number;
+}
+
+export type OrderStatus = 'PENDING' | 'PAID' | 'CANCELLED' | 'FAILED' | 'NEEDS_REVIEW';
+
+export type ReviewReason =
+  | 'ORDER_MISMATCH'
+  | 'SESSION_MISMATCH'
+  | 'AMOUNT_MISMATCH'
+  | 'CURRENCY_MISMATCH'
+  | 'PAID_AFTER_RELEASE';
 
 export interface CartItem {
   id?: number;
@@ -44,6 +68,7 @@ export interface Order {
   createdDate: string;
   sessionId?: string;
   status: OrderStatus;
+  reviewReason?: ReviewReason | null;
   orderItems: OrderItem[];
 }
 

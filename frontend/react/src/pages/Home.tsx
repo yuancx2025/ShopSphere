@@ -1,23 +1,22 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import CategoryBox from '../components/category/CategoryBox';
 import ProductBox from '../components/product/ProductBox';
-import { Category, Product } from '../types';
+import { Category } from '../types';
+import { useProductPages } from '../utils/catalog';
 import './Home.css';
 
 interface Props {
-  products: Product[] | null;
   categories: Category[] | null;
   loading: boolean;
 }
 
-const Home: React.FC<Props> = ({ products, categories, loading }) => {
-  const { categorySize, productSize } = useMemo(() => {
-    const cSize = categories ? Math.min(6, categories.length) : 0;
-    const pSize = products ? Math.min(8, products.length) : 0;
-    return { categorySize: cSize, productSize: pSize };
-  }, [categories, products]);
+const Home: React.FC<Props> = ({ categories, loading }) => {
+  // Eight products is all the home page shows, so that is all it asks for.
+  const { items: products, loading: productsLoading } = useProductPages({ size: 8 });
+  const categorySize = categories ? Math.min(6, categories.length) : 0;
+  const productSize = products.length;
 
-  if (loading || !products || !categories) {
+  if (loading || productsLoading || !categories) {
     return <div className="text-center p-5">Loading...</div>;
   }
 

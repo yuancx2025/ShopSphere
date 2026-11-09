@@ -4,6 +4,7 @@ import axios from 'axios';
 import swal from 'sweetalert';
 import { Category, Product } from '../../types';
 import { authHeaders } from '../../utils/auth';
+import { fetchProduct } from '../../utils/catalog';
 import './ShowDetails.css';
 
 declare global {
@@ -16,12 +17,11 @@ declare global {
 
 interface Props {
   baseURL: string;
-  products: Product[] | null;
   categories: Category[] | null;
   loading: boolean;
 }
 
-const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }) => {
+const ShowDetails: React.FC<Props> = ({ baseURL, categories, loading }) => {
   const { id } = useParams<{ id: string }>();
   const [token, setToken] = useState<string | null>(null);
   const [quantity, setQuantity] = useState(1);
@@ -30,10 +30,20 @@ const ShowDetails: React.FC<Props> = ({ baseURL, products, categories, loading }
     setToken(localStorage.getItem('token'));
   }, []);
 
-  const product = useMemo(() => {
-    if (!products || !id) return null;
-    return products.find((p) => p.id === Number(id)) || null;
-  }, [products, id]);
+  const [product, setProduct] = useState<Product | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    fetchProduct(Number(id))
+      .then((loaded) => {
+        if (!cancelled) setProduct(loaded);
+      })
+      .catch((err) => console.error(err));
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
   const category = useMemo(() => {
     if (!categories || !product) return null;
