@@ -1,0 +1,12 @@
+-- Sprint 1 (PR 04): index for the category page sorted by price.
+--
+-- GET /product/page?categoryId=C&sort=price_asc runs
+--   WHERE category_id = ? [AND (price_cents, id) after the cursor] ORDER BY price_cents, id LIMIT 21
+-- With only idx_product_category (category_id), MySQL reads every product in the category and sorts them to
+-- return 21 rows. This index matches the filter and the sort, so the scan starts at the cursor and stops after
+-- 21 index entries.
+--
+-- The id-sorted page needs no new index: idx_product_category already orders by (category_id, id) because InnoDB
+-- appends the primary key to every secondary index. The query pins that index with a hint (see
+-- CatalogQueries.CATEGORY_BY_ID for why). bench.py explain records the plans.
+CREATE INDEX idx_products_category_price_id ON products (category_id, price_cents, id);
