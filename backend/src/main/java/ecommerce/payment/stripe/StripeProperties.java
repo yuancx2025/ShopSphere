@@ -7,7 +7,6 @@ import org.springframework.stereotype.Component;
 @Component
 public class StripeProperties {
 
-    private static final long DEFAULT_SESSION_TTL_SECONDS = 30 * 60;
     /** Stripe minimum for USD card charges. */
     private static final long DEFAULT_MINIMUM_CHARGE_CENTS = 50;
 
@@ -34,10 +33,6 @@ public class StripeProperties {
 
     public String getBaseUrl() {
         return baseUrl;
-    }
-
-    public long getSessionTtlSeconds() {
-        return DEFAULT_SESSION_TTL_SECONDS;
     }
 
     public long getMinimumChargeCents() {
