@@ -1,35 +1,47 @@
 package ecommerce.order;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import ecommerce.dto.cart.CartDto;
-import ecommerce.dto.cart.CartItemDto;
+import ecommerce.common.Money;
+import ecommerce.exceptions.BadRequestException;
+import ecommerce.exceptions.CheckoutAttemptClosedException;
 import ecommerce.exceptions.CustomException;
 import ecommerce.exceptions.InsufficientStockException;
 import ecommerce.exceptions.OrderNotFoundException;
-import ecommerce.model.Product;
+import ecommerce.model.Cart;
 import ecommerce.model.User;
 import ecommerce.order.dto.OrderItemResponseDto;
 import ecommerce.order.dto.OrderResponseDto;
 import ecommerce.order.model.Order;
 import ecommerce.order.model.OrderItem;
 import ecommerce.order.model.OrderStatus;
+import ecommerce.order.model.ReviewReason;
+import ecommerce.order.repository.OrderLockView;
 import ecommerce.order.repository.OrderRepository;
 import ecommerce.payment.CheckoutCommand;
 import ecommerce.payment.PaymentException;
 import ecommerce.payment.PaymentGateway;
 import ecommerce.payment.PaymentSession;
 import ecommerce.payment.dto.CheckoutSessionResponseDto;
+import ecommerce.repository.CartRepository;
 import ecommerce.repository.ProductRepository;
 import ecommerce.repository.UserRepository;
 import ecommerce.service.CartService;
@@ -38,39 +50,57 @@ import ecommerce.service.CartService;
  * Order domain service: stock reservation, order lifecycle, and checkout orchestration.
  *
  * <p>Payment provider details live behind {@link PaymentGateway}; this class never imports Stripe.
- * Fulfillment can happen from two places:
+ * Payment can be applied from two places, both through {@link #applyPaidSession}:
  * <ul>
- *   <li>{@link #fulfillCheckout} — called by the Stripe webhook (trusted, no user ownership check)</li>
- *   <li>{@link #reconcileCheckout} — called by the success page when the webhook is delayed</li>
+ *   <li>{@link #fulfillCheckout} — the Stripe webhook (signature-verified, no user ownership check)</li>
+ *   <li>{@link #reconcileCheckout} — the success page when the webhook is delayed</li>
  * </ul>
  *
- * <p>Order status flow: PENDING (stock reserved) → PAID | CANCELLED | FAILED.
+ * <p>Order status flow: PENDING (stock reserved) → PAID | CANCELLED | FAILED | NEEDS_REVIEW.
+ *
+ * <p>Concurrency rules, enforced by the repositories:
+ * <ul>
+ *   <li>Stock moves only through guarded SQL ({@code stock = stock - n WHERE stock >= n}), never as an absolute
+ *       value from an entity that might predate the row lock.</li>
+ *   <li>Order transitions lock the order row with a native locking read, decide from that fresh state, and
+ *       apply a conditional UPDATE. Rows are always locked in the order user, order, product.</li>
+ *   <li>No provider call happens inside a database transaction.</li>
+ * </ul>
  */
 @Service
 public class OrderService {
 
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
     // A caller must not be able to tell an unknown session from someone else's session.
     private static final String ORDER_NOT_FOUND = "order id is not valid";
+    private static final Pattern CHECKOUT_KEY = Pattern.compile("[A-Za-z0-9_-]{8,64}");
 
     private final CartService cartService;
+    private final CartRepository cartRepository;
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
     private final UserRepository userRepository;
     private final PaymentGateway paymentGateway;
+    private final CheckoutProperties checkoutProperties;
     private final TransactionTemplate transactionTemplate;
 
     public OrderService(
             CartService cartService,
+            CartRepository cartRepository,
             OrderRepository orderRepository,
             ProductRepository productRepository,
             UserRepository userRepository,
             PaymentGateway paymentGateway,
+            CheckoutProperties checkoutProperties,
             PlatformTransactionManager transactionManager) {
         this.cartService = cartService;
+        this.cartRepository = cartRepository;
         this.orderRepository = orderRepository;
         this.productRepository = productRepository;
         this.userRepository = userRepository;
         this.paymentGateway = paymentGateway;
+        this.checkoutProperties = checkoutProperties;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
@@ -79,21 +109,22 @@ public class OrderService {
     // -------------------------------------------------------------------------
 
     public CheckoutSessionResponseDto createSession(User user) throws CustomException {
-        // Collect old Stripe session ids outside the DB transaction; expire them after commit.
+        return createSession(user, null);
+    }
+
+    /**
+     * Starts or replays a checkout attempt.
+     *
+     * @param requestedKey the client's {@code Idempotency-Key}. Repeating a key returns the same order and
+     *                     provider session instead of reserving stock again. Without one, every call is a new
+     *                     attempt.
+     */
+    public CheckoutSessionResponseDto createSession(User user, String requestedKey) throws CustomException {
+        String checkoutKey = normalizeCheckoutKey(requestedKey);
         List<String> sessionsToExpire = new ArrayList<>();
         Order order;
         try {
-            order = transactionTemplate.execute(status -> {
-                // Serialize checkout per user so two tabs cannot reserve the same stock twice.
-                userRepository.findByIdForUpdate(user.getId());
-                for (Order previous : orderRepository.findAllByUserAndStatus(user, OrderStatus.PENDING)) { // Cancel all pending orders for the user.
-                    if (previous.getSessionId() != null) {
-                        sessionsToExpire.add(previous.getSessionId());
-                    }
-                    restoreStock(previous.getId(), OrderStatus.CANCELLED);
-                }
-                return reserveFromCart(user);
-            });
+            order = startAttempt(user, checkoutKey, sessionsToExpire);
         } catch (IllegalStateException ex) {
             if ("EMPTY_CART".equals(ex.getMessage())) {
                 throw new CustomException("Cart is empty");
@@ -103,61 +134,106 @@ public class OrderService {
             }
             throw ex;
         }
-        if (order == null) {
-            throw new CustomException("Unable to reserve cart");
-        }
         sessionsToExpire.forEach(paymentGateway::expireSession);
 
-        // create the stripe session and return the url
-        try {  
-            PaymentSession session = paymentGateway.createSession(toCheckoutCommand(order));
-            try {
-                transactionTemplate.executeWithoutResult(status -> attachSessionId(order.getId(), session.getSessionId()));
-            } catch (RuntimeException ignored) {
-                // attachSessionId can fail after Stripe already created the session.
-                // reconcileCheckout / fulfillCheckout can still find the order via metadata.orderId.
+        if (order.getStatus() != OrderStatus.PENDING) {
+            throw new CheckoutAttemptClosedException(
+                    "This checkout already finished (" + order.getStatus() + "). Start a new checkout.");
+        }
+        if (order.getSessionId() != null && order.getCheckoutUrl() != null) {
+            return new CheckoutSessionResponseDto(order.getSessionId(), order.getCheckoutUrl());
+        }
+        return openProviderSession(order.getId());
+    }
+
+    private Order startAttempt(User user, String checkoutKey, List<String> sessionsToExpire) {
+        try {
+            return transactionTemplate.execute(status -> reserveOrReplay(user, checkoutKey, sessionsToExpire));
+        } catch (DataIntegrityViolationException duplicateKey) {
+            // Another request inserted this (user, checkout_key) first; replay its order.
+            sessionsToExpire.clear();
+            return orderRepository.findByUserAndCheckoutKey(user, checkoutKey).orElseThrow(() -> duplicateKey);
+        }
+    }
+
+    private Order reserveOrReplay(User user, String checkoutKey, List<String> sessionsToExpire) {
+        // Serialize checkout per user so two tabs cannot reserve the same cart twice.
+        userRepository.findByIdForUpdate(user.getId());
+        Optional<Order> replay = orderRepository.findByUserAndCheckoutKey(user, checkoutKey);
+        if (replay.isPresent()) {
+            return replay.get();
+        }
+        // A new attempt replaces the user's open ones: release their stock and expire their sessions.
+        for (Order previous : orderRepository.findAllByUserAndStatus(user, OrderStatus.PENDING)) {
+            if (previous.getSessionId() != null) {
+                sessionsToExpire.add(previous.getSessionId());
             }
-            return new CheckoutSessionResponseDto(session.getSessionId(), session.getUrl());
+            restoreStock(previous.getId(), OrderStatus.CANCELLED);
+        }
+        return reserveFromCart(user, checkoutKey);
+    }
+
+    private CheckoutSessionResponseDto openProviderSession(Integer orderId) throws CustomException {
+        CheckoutCommand command = toCheckoutCommand(reloadWithItems(orderId));
+        PaymentSession session;
+        try {
+            session = paymentGateway.createSession(command);
         } catch (PaymentException ex) {
-            // Stripe session was never created; release the reserved stock.
-            releaseCheckoutByOrderId(order.getId(), OrderStatus.CANCELLED);
+            // Keep it simple: any provider failure cancels the attempt and returns the stock. If the provider did
+            // create a session anyway, a payment on it lands in NEEDS_REVIEW (PAID_AFTER_RELEASE), never lost.
+            log.warn("Could not create a checkout session for order {}", orderId, ex);
+            releaseCheckoutByOrderId(orderId, OrderStatus.CANCELLED);
             throw new CustomException("Unable to start payment");
+        }
+        attachSession(orderId, session);
+        return new CheckoutSessionResponseDto(session.getSessionId(), session.getUrl());
+    }
+
+    private void attachSession(Integer orderId, PaymentSession session) {
+        try {
+            transactionTemplate.executeWithoutResult(status ->
+                    orderRepository.attachSession(orderId, session.getSessionId(), session.getUrl()));
+        } catch (RuntimeException ex) {
+            // The provider session exists. Fulfillment still finds the order through metadata.orderId.
+            log.warn("Could not attach session {} to order {}", session.getSessionId(), orderId, ex);
         }
     }
 
     // -------------------------------------------------------------------------
-    // Fulfillment & release (called by StripeWebhookController and reconcileCheckout)
+    // Fulfillment & release (webhook, success page, reconciler)
     // -------------------------------------------------------------------------
 
     /**
-     * Marks an order PAID when Stripe reports payment succeeded.
-     * Webhook-only path: caller is signature-verified, so there is no user ownership check.
+     * Applies a payment the provider reports. Webhook-only path: the caller is signature-verified, so there is
+     * no user ownership check.
      */
     public OrderResponseDto fulfillCheckout(String sessionId) {
         PaymentSession session = paymentGateway.retrieveSession(sessionId);
-        Order order = resolveOrder(session);
-        if (order == null) {
+        Integer orderId = resolveOrderId(session);
+        if (orderId == null) {
+            log.warn("Provider session {} (paid={}) matches no order", sessionId, session.isPaid());
             return null;
         }
-        if (order.getStatus() == OrderStatus.PAID) {
-            return toDto(reloadWithItems(order.getId()));
+        if (session.isPaid()) {
+            transactionTemplate.executeWithoutResult(status -> applyPaidSession(orderId, session));
         }
-        if (order.getStatus() == OrderStatus.CANCELLED || order.getStatus() == OrderStatus.FAILED) {
-            return toDto(reloadWithItems(order.getId()));
-        }
-        if (!session.isPaid()) {
-            // Webhook can arrive before Stripe marks the session paid; return current state.
-            return toDto(reloadWithItems(order.getId()));
-        }
-
-        Order paid = transactionTemplate.execute(status -> markPaid(order.getId()));
-        return toDto(paid);
+        return toDto(reloadWithItems(orderId));
     }
 
     /** Restores reserved stock when checkout expires or async payment fails. */
     public void releaseCheckout(String sessionId, OrderStatus terminalStatus) {
-        orderRepository.findBySessionIdWithItems(sessionId)
-                .ifPresent(order -> releaseCheckoutByOrderId(order.getId(), terminalStatus));
+        Integer orderId = orderRepository.findIdBySessionId(sessionId).orElse(null);
+        if (orderId == null) {
+            // The session was never attached; the provider's metadata is the only link back to the order.
+            PaymentSession session = paymentGateway.retrieveSession(sessionId);
+            Order order = session.getOrderId() == null ? null
+                    : orderRepository.findById(session.getOrderId()).orElse(null);
+            if (order == null || (order.getSessionId() != null && !order.getSessionId().equals(sessionId))) {
+                return;
+            }
+            orderId = order.getId();
+        }
+        releaseCheckoutByOrderId(orderId, terminalStatus);
     }
 
     public void releaseCheckoutByOrderId(Integer orderId, OrderStatus terminalStatus) {
@@ -182,7 +258,7 @@ public class OrderService {
         return toDto(order);
     }
 
-    /** Read-only lookup for the success page poll loop. Never calls Stripe or mutates state. */
+    /** Read-only lookup for the success page poll loop. Never calls the provider or mutates state. */
     public OrderResponseDto getOrderForSession(String sessionId, User user) throws OrderNotFoundException {
         Order order = orderRepository.findBySessionIdWithItems(sessionId)
                 .orElseThrow(() -> new OrderNotFoundException(ORDER_NOT_FOUND));
@@ -192,42 +268,37 @@ public class OrderService {
 
     /**
      * User-triggered recovery when the webhook is delayed or missing (e.g. local dev without
-     * {@code stripe listen}). Ownership is checked before any write or Stripe call that could
-     * mark an order paid.
+     * {@code stripe listen}). Ownership is checked before any write or provider call that could change the order.
      */
     public OrderResponseDto reconcileCheckout(String sessionId, User user) throws OrderNotFoundException {
-        Order order = orderRepository.findBySessionIdWithItems(sessionId).orElse(null);
+        Integer orderId = orderRepository.findIdBySessionId(sessionId).orElse(null);
         PaymentSession session = null;
-
-        if (order == null) {
+        if (orderId == null) {
             // The session id was never persisted, so provider metadata is the only link back to the order.
             session = paymentGateway.retrieveSession(sessionId);
             if (session.getOrderId() == null) {
                 throw new OrderNotFoundException(ORDER_NOT_FOUND);
             }
-            order = orderRepository.findByIdWithItems(session.getOrderId())
-                    .orElseThrow(() -> new OrderNotFoundException(ORDER_NOT_FOUND));
+            orderId = session.getOrderId();
         }
-
+        Order order = orderRepository.findByIdWithItems(orderId)
+                .orElseThrow(() -> new OrderNotFoundException(ORDER_NOT_FOUND));
         requireOwner(order, user);
 
-        // Backfill session id when attachSessionId failed at checkout time.
-        if (order.getSessionId() == null) {
-            healSessionId(order.getId(), sessionId);
-            order = reloadWithItems(order.getId());
-        }
-        if (order.getStatus() != OrderStatus.PENDING) {
+        if (order.getStatus() == OrderStatus.PAID || order.getStatus() == OrderStatus.NEEDS_REVIEW) {
             return toDto(order);
         }
         if (session == null) {
             session = paymentGateway.retrieveSession(sessionId);
         }
-        if (!session.isPaid()) {
-            return toDto(order);
+        if (session.isPaid()) {
+            Integer id = orderId;
+            PaymentSession paid = session;
+            transactionTemplate.executeWithoutResult(status -> applyPaidSession(id, paid));
+        } else if (order.getSessionId() == null && order.getStatus() == OrderStatus.PENDING) {
+            attachSession(orderId, session);
         }
-
-        Integer orderId = order.getId();
-        return toDto(transactionTemplate.execute(status -> markPaid(orderId)));
+        return toDto(reloadWithItems(orderId));
     }
 
     /** Same error text for missing and foreign orders so callers cannot probe session ids. */
@@ -238,179 +309,172 @@ public class OrderService {
     }
 
     // -------------------------------------------------------------------------
-    // Stock reservation & order persistence
+    // Stock reservation & state transitions (each runs inside a transaction)
     // -------------------------------------------------------------------------
 
     /**
-     * Converts the user's cart into a PENDING order and decrements product stock.
-     * Must run inside a transaction with product rows locked ({@code findAllByIdForUpdate}).
-     * Cart is not cleared here; that happens in {@link #markPaid} after payment succeeds.
+     * Converts the user's cart into a PENDING order and takes the units out of stock. Each product's stock is
+     * decremented with one guarded UPDATE, in product id order so multi-item carts cannot deadlock. If any
+     * product is short, the exception rolls back the whole reservation.
+     * Cart is not cleared here; that happens when the payment is applied.
      */
-    private Order reserveFromCart(User user) {
-        CartDto cartDto = cartService.listCartItems(user);
-        List<CartItemDto> cartItems = cartDto.getcartItems();
-        if (cartItems == null || cartItems.isEmpty()) {
+    private Order reserveFromCart(User user, String checkoutKey) {
+        List<Cart> lines = cartService.cartLines(user);
+        if (lines.isEmpty()) {
             throw new IllegalStateException("EMPTY_CART");
         }
 
-        double total = 0;
-        Map<Integer, Integer> quantityByProductId = new HashMap<>();
-        for (CartItemDto item : cartItems) {
-            Integer productId = item.getProduct().getId();
-            // Merge duplicate cart lines for the same product before locking stock.
-            quantityByProductId.merge(productId, item.getQuantity(), Integer::sum);
-            total += item.getProduct().getPrice() * item.getQuantity();
+        Map<Integer, Integer> quantityByProductId = new TreeMap<>();
+        Map<Integer, String> nameByProductId = new TreeMap<>();
+        long totalCents = 0;
+        for (Cart line : lines) {
+            Integer productId = line.getProduct().getId();
+            quantityByProductId.merge(productId, line.getQuantity(), Integer::sum);
+            nameByProductId.put(productId, line.getProduct().getName());
+            totalCents = Math.addExact(totalCents,
+                    Math.multiplyExact(line.getProduct().getPriceCents(), (long) line.getQuantity()));
         }
-        long amountCents = Math.round(total * 100);
-        if (amountCents < paymentGateway.minimumChargeCents()) {
+        if (totalCents < paymentGateway.minimumChargeCents()) {
             throw new IllegalStateException("MIN_CHARGE");
         }
 
-        List<Integer> productIds = new ArrayList<>(quantityByProductId.keySet());
-        productIds.sort(Integer::compareTo); // consistent lock order → fewer deadlocks
-        List<Product> lockedProducts = productRepository.findAllByIdForUpdate(productIds);
-        if (lockedProducts.size() != productIds.size()) {
-            throw new InsufficientStockException("One or more products are no longer available");
+        for (Map.Entry<Integer, Integer> entry : quantityByProductId.entrySet()) {
+            if (productRepository.reserveStock(entry.getKey(), entry.getValue()) != 1) {
+                throw new InsufficientStockException("Not enough stock for " + nameByProductId.get(entry.getKey()));
+            }
         }
-
-        Map<Integer, Product> productsById = lockedProducts.stream()
-                .collect(Collectors.toMap(Product::getId, product -> product));
 
         Order order = new Order();
         order.setCreatedDate(new Date());
         order.setUser(user);
         order.setStatus(OrderStatus.PENDING);
-        order.setTotalPrice(total);
+        order.setTotalCents(totalCents);
+        order.setCurrency(Money.DEFAULT_CURRENCY);
+        order.setCheckoutKey(checkoutKey);
+        order.setStockHeld(true);
         order.setOrderItems(new ArrayList<>());
-
-        for (CartItemDto item : cartItems) {
-            Product product = productsById.get(item.getProduct().getId());
-            int requested = quantityByProductId.get(product.getId());
-            if (product.getStock() < requested) {
-                throw new InsufficientStockException("Not enough stock for " + product.getName());
-            }
+        for (Cart line : lines) {
+            order.getOrderItems().add(
+                    new OrderItem(order, line.getProduct(), line.getQuantity(), line.getProduct().getPriceCents()));
         }
-
-        for (Integer productId : productIds) {
-            Product product = productsById.get(productId);
-            product.setStock(product.getStock() - quantityByProductId.get(productId));
-            productRepository.save(product);
-        }
-
-        for (CartItemDto item : cartItems) {
-            Product product = productsById.get(item.getProduct().getId());
-            OrderItem orderItem = new OrderItem(order, product, item.getQuantity(), product.getPrice());
-            order.getOrderItems().add(orderItem);
-        }
-
         return orderRepository.save(order);
     }
 
-    /** Maps a persisted order into the provider-neutral shape expected by {@link PaymentGateway}. */
+    /**
+     * Applies a paid provider session to its order: PENDING → PAID when the session matches the order, and
+     * NEEDS_REVIEW when it does not or when the reservation was already released. Idempotent.
+     */
+    private void applyPaidSession(Integer orderId, PaymentSession session) {
+        OrderLockView order = orderRepository.lockForTransition(orderId).orElseThrow();
+        OrderStatus status = OrderStatus.valueOf(order.getStatus());
+        if (status == OrderStatus.PAID || status == OrderStatus.NEEDS_REVIEW) {
+            return; // duplicate delivery, or already flagged
+        }
+        if (status == OrderStatus.CANCELLED || status == OrderStatus.FAILED) {
+            // The customer was charged after the units went back on the shelf. Never ignore it.
+            orderRepository.markNeedsReview(orderId, ReviewReason.PAID_AFTER_RELEASE.name(), session.getSessionId());
+            log.warn("Order {} was paid by session {} after its stock was released; needs refund or review",
+                    orderId, session.getSessionId());
+            return;
+        }
+        ReviewReason mismatch = mismatch(order, session);
+        if (mismatch != null) {
+            orderRepository.markNeedsReview(orderId, mismatch.name(), session.getSessionId());
+            log.warn("Paid session {} does not match order {}: {}", session.getSessionId(), orderId, mismatch);
+            return;
+        }
+        orderRepository.markPaid(orderId, session.getSessionId());
+        cartRepository.deleteAllByUserId(order.getUserId());
+    }
+
+    /** The paid session must be for this order, this session, this amount and this currency. */
+    static ReviewReason mismatch(OrderLockView order, PaymentSession session) {
+        if (session.getOrderId() != null && !session.getOrderId().equals(order.getId())) {
+            return ReviewReason.ORDER_MISMATCH;
+        }
+        if (order.getSessionId() != null && !order.getSessionId().equals(session.getSessionId())) {
+            return ReviewReason.SESSION_MISMATCH;
+        }
+        if (order.getTotalCents() == null || !order.getTotalCents().equals(session.getAmountTotalCents())) {
+            return ReviewReason.AMOUNT_MISMATCH;
+        }
+        if (session.getCurrency() == null || !session.getCurrency().equalsIgnoreCase(order.getCurrency())) {
+            return ReviewReason.CURRENCY_MISMATCH;
+        }
+        return null;
+    }
+
+    /** PENDING → CANCELLED/FAILED and put the reserved units back, exactly once. */
+    private void restoreStock(Integer orderId, OrderStatus terminalStatus) {
+        OrderLockView order = orderRepository.lockForTransition(orderId).orElseThrow();
+        if (!OrderStatus.PENDING.name().equals(order.getStatus())) {
+            return;
+        }
+        if (orderRepository.releaseReservation(orderId, terminalStatus.name()) != 1) {
+            return;
+        }
+        Map<Integer, Integer> quantityByProductId = new TreeMap<>();
+        for (Object[] row : orderRepository.findItemQuantities(orderId)) {
+            quantityByProductId.merge((Integer) row[0], (Integer) row[1], Integer::sum);
+        }
+        quantityByProductId.forEach(productRepository::releaseStock);
+    }
+
+    // -------------------------------------------------------------------------
+    // Mapping helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Maps a persisted order into the provider-neutral command. Every field comes from the stored order, so a
+     * retry of the same attempt sends identical parameters under the same idempotency key.
+     */
     private CheckoutCommand toCheckoutCommand(Order order) {
-        Order withItems = reloadWithItems(order.getId());
         List<CheckoutCommand.LineItem> lineItems = new ArrayList<>();
-        for (OrderItem item : withItems.getOrderItems()) {
+        for (OrderItem item : order.getOrderItems()) {
             Integer productId = item.getProduct() == null ? null : item.getProduct().getId();
-            lineItems.add(new CheckoutCommand.LineItem(
-                    productId,
-                    item.getProductName(),
-                    item.getQuantity(),
-                    Math.round(item.getPrice() * 100)));
+            lineItems.add(new CheckoutCommand.LineItem(productId, item.getProductName(), item.getQuantity(),
+                    item.getUnitPriceCents()));
         }
         String email = order.getUser() == null ? null : order.getUser().getEmail();
         Integer userId = order.getUser() == null ? null : order.getUser().getId();
-        return new CheckoutCommand(order.getId(), userId, email, lineItems);
+        Instant expiresAt = order.getCreatedDate().toInstant()
+                .plus(checkoutProperties.getSessionTtl())
+                .truncatedTo(ChronoUnit.SECONDS);
+        return new CheckoutCommand(order.getId(), userId, email, lineItems, order.getTotalCents(),
+                order.getCurrency(), providerIdempotencyKey(order), expiresAt);
     }
 
-    private void attachSessionId(Integer orderId, String sessionId) {
-        Order order = orderRepository.findById(orderId).orElseThrow();
-        order.setSessionId(sessionId);
-        orderRepository.save(order);
+    /** Unique per order (order id) and per attempt (checkout key), stable across retries. */
+    static String providerIdempotencyKey(Order order) {
+        return "shopsphere-checkout-" + order.getId() + "-" + order.getCheckoutKey();
     }
 
-    private void healSessionId(Integer orderId, String sessionId) {
-        try {
-            transactionTemplate.executeWithoutResult(status -> {
-                Order order = orderRepository.findById(orderId).orElseThrow();
-                if (order.getSessionId() == null) {
-                    order.setSessionId(sessionId);
-                    orderRepository.save(order);
-                }
-            });
-        } catch (RuntimeException ignored) {
-            // Another request attached it first; the order is still resolvable via metadata.
+    private static String normalizeCheckoutKey(String requestedKey) {
+        if (requestedKey == null || requestedKey.isBlank()) {
+            return UUID.randomUUID().toString();
         }
+        String key = requestedKey.trim();
+        if (!CHECKOUT_KEY.matcher(key).matches()) {
+            throw new BadRequestException("Idempotency-Key must be 8-64 characters of letters, digits, '-' or '_'");
+        }
+        return key;
     }
 
     /**
-     * Locates an order from a retrieved payment session.
-     * Tries session id first, then metadata {@code orderId} when attachSessionId never ran.
+     * Resolves the order a provider session belongs to: by attached session id first, then by the order id
+     * the session carries in its metadata.
      */
-    private Order resolveOrder(PaymentSession session) {
+    private Integer resolveOrderId(PaymentSession session) {
         if (session.getSessionId() != null) {
-            Order bySession = orderRepository.findBySessionIdWithItems(session.getSessionId()).orElse(null);
-            if (bySession != null) {
-                return bySession;
+            Optional<Integer> bySession = orderRepository.findIdBySessionId(session.getSessionId());
+            if (bySession.isPresent()) {
+                return bySession.get();
             }
         }
-        if (session.getOrderId() == null) {
-            return null;
+        if (session.getOrderId() != null && orderRepository.existsById(session.getOrderId())) {
+            return session.getOrderId();
         }
-        return orderRepository.findByIdWithItems(session.getOrderId()).orElse(null);
-    }
-
-    /** PENDING → PAID and clear the cart. Idempotent if already terminal. */
-    private Order markPaid(Integer orderId) {
-        lockOrder(orderId);
-        Order order = reloadWithItems(orderId);
-        if (order.getStatus() != OrderStatus.PENDING) {
-            return order;
-        }
-        order.setStatus(OrderStatus.PAID);
-        orderRepository.save(order);
-        cartService.deleteUserCartItems(order.getUser());
-        return order;
-    }
-
-    /** PENDING → CANCELLED/FAILED and put reserved quantity back on the shelf. */
-    private void restoreStock(Integer orderId, OrderStatus terminalStatus) {
-        lockOrder(orderId);
-        Order order = reloadWithItems(orderId);
-        if (order.getStatus() != OrderStatus.PENDING) {
-            return;
-        }
-
-        List<Integer> productIds = order.getOrderItems().stream()
-                .filter(item -> item.getProduct() != null)
-                .map(item -> item.getProduct().getId())
-                .distinct()
-                .sorted()
-                .collect(Collectors.toList());
-        if (!productIds.isEmpty()) {
-            List<Product> locked = productRepository.findAllByIdForUpdate(productIds);
-            Map<Integer, Product> byId = locked.stream().collect(Collectors.toMap(Product::getId, product -> product));
-            for (OrderItem item : order.getOrderItems()) {
-                if (item.getProduct() == null) {
-                    continue;
-                }
-                Product product = byId.get(item.getProduct().getId());
-                if (product != null) {
-                    product.setStock(product.getStock() + item.getQuantity());
-                    productRepository.save(product);
-                }
-            }
-        }
-        order.setStatus(terminalStatus);
-        orderRepository.save(order);
-    }
-
-    /**
-     * Serializes concurrent transitions of one order, e.g. the Stripe webhook and a reconcile request
-     * racing to mark the same order paid. Rows are always locked in the order user, order, product.
-     */
-    private void lockOrder(Integer orderId) {
-        orderRepository.findByIdForUpdate(orderId).orElseThrow();
+        return null;
     }
 
     private Order reloadWithItems(Integer orderId) {
@@ -420,10 +484,12 @@ public class OrderService {
     private OrderResponseDto toDto(Order order) {
         OrderResponseDto dto = new OrderResponseDto();
         dto.setId(order.getId());
-        dto.setTotalPrice(order.getTotalPrice());
+        dto.setTotalPrice(order.getTotalCents() == null ? null : Money.fromCents(order.getTotalCents()));
+        dto.setCurrency(order.getCurrency());
         dto.setCreatedDate(order.getCreatedDate());
         dto.setSessionId(order.getSessionId());
         dto.setStatus(order.getStatus());
+        dto.setReviewReason(order.getReviewReason());
         List<OrderItemResponseDto> items = new ArrayList<>();
         if (order.getOrderItems() != null) {
             for (OrderItem item : order.getOrderItems()) {
@@ -434,7 +500,7 @@ public class OrderService {
                         item.getProductName(),
                         imageURL,
                         item.getQuantity(),
-                        item.getPrice()));
+                        Money.fromCents(item.getUnitPriceCents())));
             }
         }
         dto.setOrderItems(items);

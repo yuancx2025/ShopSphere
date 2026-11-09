@@ -7,6 +7,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -30,11 +31,18 @@ public class OrderController {
         this.currentUserService = currentUserService;
     }
 
+    /**
+     * Reserves the cart and returns the hosted payment page. Send an {@code Idempotency-Key} (8-64 chars of
+     * {@code [A-Za-z0-9_-]}) and reuse it when retrying: a repeated key returns the same order and session
+     * instead of reserving again. 409 = not enough stock or attempt already finished; 503 = provider outcome
+     * unknown, retry with the same key.
+     */
     @PostMapping("/create-checkout-session")
-    public ResponseEntity<CheckoutSessionResponseDto> createCheckoutSession()
+    public ResponseEntity<CheckoutSessionResponseDto> createCheckoutSession(
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey)
             throws AuthenticationFailException, CustomException {
         User user = currentUserService.requireCurrentUser();
-        return new ResponseEntity<>(orderService.createSession(user), HttpStatus.OK);
+        return new ResponseEntity<>(orderService.createSession(user, idempotencyKey), HttpStatus.OK);
     }
 
     @GetMapping("/")
