@@ -29,6 +29,7 @@ import ecommerce.model.Category;
 import ecommerce.repository.CategoryRepository;
 import ecommerce.service.ProductService;
 import ecommerce.support.MySqlIntegrationTest;
+import ecommerce.support.SharedContainers;
 import ecommerce.support.TestData;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
@@ -44,14 +45,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
         "spring.elasticsearch.socket-timeout=2s"})
 class ProductSearchTest extends MySqlIntegrationTest {
 
-    static final ElasticsearchContainer ES =
-            new ElasticsearchContainer("docker.elastic.co/elasticsearch/elasticsearch:8.10.4")
-                    .withEnv("xpack.security.enabled", "false")
-                    .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m");
-
-    static {
-        ES.start();
-    }
+    static final ElasticsearchContainer ES = SharedContainers.elasticsearch();
 
     @DynamicPropertySource
     static void elasticsearch(DynamicPropertyRegistry registry) {

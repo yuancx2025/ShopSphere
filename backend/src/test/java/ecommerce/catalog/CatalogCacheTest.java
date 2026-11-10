@@ -31,6 +31,7 @@ import ecommerce.repository.CategoryRepository;
 import ecommerce.repository.UserRepository;
 import ecommerce.service.ProductService;
 import ecommerce.support.MySqlIntegrationTest;
+import ecommerce.support.SharedContainers;
 import ecommerce.support.TestData;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -46,11 +47,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 @TestPropertySource(properties = {"spring.cache.type=redis", "catalog.cache.bypass-after-error=300ms"})
 class CatalogCacheTest extends MySqlIntegrationTest {
 
-    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.4.2-alpine").withExposedPorts(6379);
-
-    static {
-        REDIS.start();
-    }
+    static final GenericContainer<?> REDIS = SharedContainers.redis();
 
     @DynamicPropertySource
     static void redis(DynamicPropertyRegistry registry) {
