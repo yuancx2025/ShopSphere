@@ -247,7 +247,10 @@ class CatalogCacheTest extends MySqlIntegrationTest {
         } finally {
             REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
         }
-        Thread.sleep(400); // let the 300 ms bypass window close
+        // Bypassed reads are misses too. Once the bypass window closes, the entry cached before the hang is a hit
+        // again, which also leaves Redis usable for the next test.
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(
+                () -> assertThat(xCache("/product/" + LAMP)).isEqualTo("HIT"));
     }
 
     private String xCache(String path) throws Exception {
