@@ -346,6 +346,11 @@ def summarize_trial(trial: int, code: int, summary: dict, route: str, rate: floa
         "successful_rps": successes / seconds if seconds else 0.0,
         "unexpected_failure_rate": metric(summary, "unexpected_failures").get("rate", 0.0),
         "latency_ms": {k: latency.get(k) for k in ("med", "p(90)", "p(95)", "p(99)", "max")},
+        # Split by the backend's X-Cache header; null when the route or the cache-off variant sends none.
+        "latency_by_cache": {
+            outcome: ({k: values.get(k) for k in ("med", "p(90)", "p(95)", "p(99)", "max", "count")}
+                      if (values := metric(summary, f"cache_{outcome}_duration")) else None)
+            for outcome in ("hit", "miss")},
         "response_bytes_avg": metric(summary, "response_bytes").get("avg"),
         "sql": {k: sql[k] for k in ("all_statements", "all_selects", "app_table_reads", "app_rows_examined")},
         "app_sql_reads_per_success": (sql["app_table_reads"] / successes) if successes else None,
@@ -433,9 +438,9 @@ def fmt(value, digits: int = 1) -> str:
 def trial_table(results: list[dict]) -> list[str]:
     lines = [
         "| Trial | Gate | Scheduled | Delivered req/s | Successful req/s | p50 ms | p95 ms | p99 ms "
-        "| Unexpected failures | Dropped | App SQL reads / success | Cache hit % | Redis errors | Bypassed cache operations "
-        "| Avg response bytes |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Unexpected failures | Dropped | App SQL reads / success | Cache hit % | Hit p50 / p95 ms "
+        "| Miss p50 / p95 ms | Redis errors | Bypassed cache operations | Avg response bytes |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in results:
         lat = r["latency_ms"]
@@ -445,10 +450,16 @@ def trial_table(results: list[dict]) -> list[str]:
             f"| {fmt(r['delivered_rps'])} | {fmt(r['successful_rps'])} | {fmt(lat['med'])} "
             f"| {fmt(lat['p(95)'])} | {fmt(lat['p(99)'])} | {fmt(r['unexpected_failure_rate'] * 100, 2)}% "
             f"| {r['dropped_iterations']} | {fmt(r['app_sql_reads_per_success'], 2)} "
-            f"| {cache_hit_pct(r)} | {(r.get('cache') or {}).get('redis_errors', 'n/a')} "
+            f"| {cache_hit_pct(r)} | {split_latency(r, 'hit')} | {split_latency(r, 'miss')} "
+            f"| {(r.get('cache') or {}).get('redis_errors', 'n/a')} "
             f"| {(r.get('cache') or {}).get('bypassed', 'n/a')} "
             f"| {fmt(r['response_bytes_avg'], 0)} |")
     return lines
+
+
+def split_latency(result: dict, outcome: str) -> str:
+    lat = (result.get("latency_by_cache") or {}).get(outcome)
+    return "n/a" if not lat else f"{fmt(lat['med'], 2)} / {fmt(lat['p(95)'])}"
 
 
 def cache_hit_pct(result: dict) -> str:
@@ -892,6 +903,10 @@ def run_summary(run_dir: Path) -> dict:
     results = json.loads((run_dir / "results.json").read_text())
     med = lambda values: statistics.median(values) if values else None  # noqa: E731
     pick = lambda key: [r["latency_ms"][key] for r in results if r["latency_ms"].get(key) is not None]  # noqa: E731
+    def split(outcome: str, key: str) -> list[float]:
+        return [lat[key] for r in results
+                if (lat := (r.get("latency_by_cache") or {}).get(outcome)) and lat.get(key) is not None]
+
     reads = [r["app_sql_reads_per_success"] for r in results if r.get("app_sql_reads_per_success") is not None]
     return {
         "label": f"{manifest['scenario']} @ {manifest['rate']:g}/s ({run_dir.name})",
@@ -900,6 +915,10 @@ def run_summary(run_dir: Path) -> dict:
         "median p50 ms": med(pick("med")),
         "median p95 ms": med(pick("p(95)")),
         "median p99 ms": med(pick("p(99)")),
+        "median hit p50 ms": med(split("hit", "med")),
+        "median hit p95 ms": med(split("hit", "p(95)")),
+        "median miss p50 ms": med(split("miss", "med")),
+        "median miss p95 ms": med(split("miss", "p(95)")),
         "median delivered req/s": med([r["delivered_rps"] for r in results]),
         "median successful req/s": med([r["successful_rps"] for r in results]),
         "max unexpected failure %": max(r["unexpected_failure_rate"] for r in results) * 100,
