@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import static ecommerce.catalog.CatalogCacheConfig.CATALOG_PAGE;
 import static ecommerce.catalog.CatalogCacheConfig.PRODUCT_DETAIL;
 
+import ecommerce.catalog.CacheOutcome;
 import ecommerce.common.Money;
 import ecommerce.dto.product.ProductDto;
 import ecommerce.dto.product.ProductUpdateDto;
@@ -105,6 +106,7 @@ public class ProductService {
     @Cacheable(cacheNames = PRODUCT_DETAIL, key = "#productId")
     @Transactional(readOnly = true)
     public ProductDto getProductDetail(Integer productId) throws ProductNotExistException {
+        CacheOutcome.markLoaded();
         return new ProductDto(getProductById(productId));
     }
 

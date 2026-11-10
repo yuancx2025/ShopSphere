@@ -234,6 +234,27 @@ class CatalogCacheTest extends MySqlIntegrationTest {
         assertThat(json.readTree(body("/product/" + DESK)).get("name").asText()).isEqualTo("Desk");
     }
 
+    @Test
+    void theXCacheHeaderTellsAMissFromAHit() throws Exception {
+        assertThat(xCache("/product/" + LAMP)).isEqualTo("MISS");
+        assertThat(xCache("/product/" + LAMP)).isEqualTo("HIT");
+        assertThat(xCache("/product/" + DESK)).isEqualTo("MISS");
+
+        // A Redis error is read from MySQL, so it is a miss too.
+        REDIS.getDockerClient().pauseContainerCmd(REDIS.getContainerId()).exec();
+        try {
+            assertThat(xCache("/product/" + LAMP)).isEqualTo("MISS");
+        } finally {
+            REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
+        }
+        Thread.sleep(400); // let the 300 ms bypass window close
+    }
+
+    private String xCache(String path) throws Exception {
+        return mvc.perform(get(path)).andExpect(status().isOk()).andReturn().getResponse()
+                .getHeader(CacheOutcome.HEADER);
+    }
+
     private String body(String path) throws Exception {
         return mvc.perform(get(path)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
     }
