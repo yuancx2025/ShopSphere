@@ -13,6 +13,7 @@ import static ecommerce.catalog.CatalogCacheConfig.CATALOG_PAGE;
 import static ecommerce.catalog.CatalogCacheConfig.PRODUCT_DETAIL;
 
 import ecommerce.common.Money;
+import ecommerce.events.ProductChange;
 import ecommerce.dto.product.ProductDto;
 import ecommerce.dto.product.ProductUpdateDto;
 import ecommerce.dto.product.StockAdjustmentResponseDto;
@@ -60,7 +61,7 @@ public class ProductService {
         product.setName(productDto.getName());
         product.setStock(productDto.getStock());
         Product saved = productRepository.save(product);
-        searchIndexJobs.enqueue(saved.getId());
+        searchIndexJobs.enqueue(saved.getId(), ProductChange.CREATED);
         return saved;
     }
 
@@ -84,12 +85,13 @@ public class ProductService {
         product.setPriceCents(toCents(update.getPrice()));
         product.setCategory(category);
         product.bumpSearchVersion();
-        searchIndexJobs.enqueue(productId);
+        searchIndexJobs.enqueue(productId, ProductChange.UPDATED);
     }
 
     /**
      * Changes stock by a signed delta in one guarded UPDATE, so it composes with concurrent reservations
-     * instead of overwriting them. Rejects a change that would make stock negative.
+     * instead of overwriting them. Rejects a change that would make stock negative. The outbox row commits with
+     * the stock change, so the cache invalidator hears about it (stock isn't indexed, so search ignores it).
      */
     @Transactional
     @Caching(evict = {
@@ -105,6 +107,7 @@ public class ProductService {
             }
             throw new InsufficientStockException("Adjustment of " + delta + " would make stock negative");
         }
+        searchIndexJobs.enqueue(productId, ProductChange.STOCK);
         return new StockAdjustmentResponseDto(productId, delta, productRepository.currentStock(productId));
     }
 

@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import ecommerce.dto.product.ProductUpdateDto;
+import ecommerce.events.ProductChange;
 import ecommerce.model.Category;
 import ecommerce.repository.CategoryRepository;
 import ecommerce.service.ProductService;
@@ -165,8 +166,8 @@ class ProductSearchTest extends MySqlIntegrationTest {
         indexer.drainAll();
 
         // Replay: the same product queued again, as after a crash between the upsert and the job delete.
-        jobs.enqueue(BRASS_LAMP);
-        jobs.enqueue(BRASS_LAMP);
+        jobs.enqueue(BRASS_LAMP, ProductChange.UPDATED);
+        jobs.enqueue(BRASS_LAMP, ProductChange.UPDATED);
         assertThat(indexer.drainOnce()).isEqualTo(2);
         // A rebuild or a second backend that read the row before the edit, arriving last.
         indexer.upsert(before);

@@ -21,7 +21,7 @@ public final class TestData {
     public TestData reset() {
         jdbc.execute("SET FOREIGN_KEY_CHECKS = 0");
         for (String table : new String[] {"orderitems", "orders", "cart", "wishlist", "processed_stripe_events",
-                "search_index_jobs", "products", "categories"}) {
+                "consumed_events", "search_index_jobs", "products", "categories"}) {
             jdbc.execute("TRUNCATE TABLE " + table);
         }
         jdbc.update("DELETE FROM users WHERE email LIKE '%@it.shopsphere.test'");

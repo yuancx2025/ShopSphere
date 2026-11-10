@@ -6,9 +6,13 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import ecommerce.events.ProductChange;
+
 /**
- * The {@code search_index_jobs} table: a small outbox between admin catalog writes and Elasticsearch.
- * Jobs are written whether or not Elasticsearch is enabled, so turning it on later needs only a backfill.
+ * The {@code search_index_jobs} table: the outbox between admin catalog writes and their consumers. With
+ * {@code events.enabled=false} {@link ProductIndexer} drains it into Elasticsearch directly; with events on,
+ * {@code OutboxPublisher} sends it to RocketMQ (see V9). Jobs are written whether or not either is enabled, so
+ * turning one on later needs only a backfill.
  */
 @Repository
 public class SearchIndexJobs {
@@ -23,10 +27,10 @@ public class SearchIndexJobs {
         this.jdbc = jdbc;
     }
 
-    /** Queues a product for indexing. Call inside the transaction that changes the product. */
-    public void enqueue(int productId) {
-        jdbc.update("INSERT INTO search_index_jobs (product_id) VALUES (:productId)",
-                new MapSqlParameterSource("productId", productId));
+    /** Queues a product change. Call inside the transaction that changes the product. */
+    public void enqueue(int productId, ProductChange change) {
+        jdbc.update("INSERT INTO search_index_jobs (product_id, change_type) VALUES (:productId, :change)",
+                new MapSqlParameterSource("productId", productId).addValue("change", change.name()));
     }
 
     /** Queues every product (the backfill). Returns the number of jobs written. */
