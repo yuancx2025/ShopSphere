@@ -134,6 +134,10 @@ services:
       # Engine for requests without ?engine= (the React UI): elasticsearch with --search, else mysql.
       SEARCH_ENGINE: ${BENCH_SEARCH_ENGINE:-mysql}
       SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
+      # Sprint 5: publish the outbox to RocketMQ and run both consumer groups. Set by `bench.py up --events`,
+      # which starts the broker and creates the topic before the backend.
+      EVENTS_ENABLED: ${BENCH_EVENTS:-false}
+      EVENTS_NAMESRV: rocketmq-namesrv:9876
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/shopsphere_bench
       SPRING_DATASOURCE_USERNAME: shopsphere
       SPRING_DATASOURCE_PASSWORD: bench

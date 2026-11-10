@@ -35,7 +35,7 @@ is at <http://127.0.0.1:9090>.
 | Path | Purpose |
 | --- | --- |
 | `bench.py` | Runner: `up`, `seed`, `run`, `ladder`, `burst`, `explain`, `compare`, `cache`, `smoke`, `down`. Standard library only. |
-| `docker-compose.bench.yml` | Dedicated stack (project `shopsphere-bench`): MySQL, Redis, backend with the `bench` profile, optional Elasticsearch (`search` profile), optional Prometheus and Grafana. It doesn't touch the dev stack's containers, ports or database. |
+| `docker-compose.bench.yml` | Dedicated stack (project `shopsphere-bench`): MySQL, Redis, backend with the `bench` profile, optional Elasticsearch (`search` profile), optional RocketMQ name server and broker (`events` profile, Sprint 5), optional Prometheus and Grafana. It doesn't touch the dev stack's containers, ports or database. |
 | `seed/generate_fixture.py` | Deterministic fixture (v3; same rows as v2, and the reset also clears `search_index_jobs`): 10,000 catalog products in 12 categories with exact `price_cents`, a hot SKU with 20 units, 200 shoppers and 100 carts. Same seed, same SQL bytes. |
 | `k6/product-detail.js` | `GET /product/{productID}`, uniform or hot-set (80% of reads on 20% of products) access. |
 | `k6/product-list.js` | Legacy `GET /product/` (whole catalog). Use a low rate. |
@@ -51,7 +51,7 @@ is at <http://127.0.0.1:9090>.
 
 | Command | What it does |
 | --- | --- |
-| `up [--observability] [--cache none\|redis] [--search]` | Builds the backend image and starts the stack, waiting for health checks. `--cache` sets the backend's catalog cache (the A/B switch) and recreates the backend; without it, `$BENCH_CACHE` or `none` is used. `--search` also starts Elasticsearch and turns on the backend's Elasticsearch engine and indexer (`$BENCH_SEARCH`). The MySQL FULLTEXT engine is always on, so `GET /product/search?engine=mysql\|elasticsearch` compares both on one stack. |
+| `up [--observability] [--cache none\|redis] [--search] [--events]` | Builds the backend image and starts the stack, waiting for health checks. `--cache` sets the backend's catalog cache (the A/B switch) and recreates the backend; without it, `$BENCH_CACHE` or `none` is used. `--search` also starts Elasticsearch and turns on the backend's Elasticsearch engine and indexer (`$BENCH_SEARCH`). The MySQL FULLTEXT engine is always on, so `GET /product/search?engine=mysql\|elasticsearch` compares both on one stack. `--events` (Sprint 5, `$BENCH_EVENTS`) also starts RocketMQ, creates the `catalog-product-changed` topic, and turns on the backend's outbox publisher and its two consumer groups (`search-indexer`, `cache-invalidator`); it implies `--search` and `--cache redis`. |
 | `seed [--products N --seed S]` | Generates the fixture, resets the bench database to it and verifies the counts. With search on, it then rebuilds the index through `POST /product/search/rebuild` (as the Flyway V2 test admin), waits for the job queue to drain, and checks that the document count equals the product count. It logs the backfill time and rate. |
 | `seed-wands [--split-seed S]` | Loads the WANDS catalog (42,994 products) from `results/wands/raw/` (prints the download commands if missing) and, with search on, indexes it. Required by `run search`; the other scenarios need `seed`. |
 | `run search --engine mysql\|elasticsearch --rate R` | Search latency on the WANDS catalog. Both engines run on one stack, so compare them with the same trace seed. |

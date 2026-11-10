@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""ShopSphere benchmark runner (Sprints 0-2). Standard library only.
+"""ShopSphere benchmark runner (Sprints 0-5). Standard library only.
 
-  python3 benchmarks/bench.py up [--observability] [--cache redis] [--search]   build and start the bench stack
+  python3 benchmarks/bench.py up [--observability] [--cache redis] [--search] [--events]   build and start the stack
   python3 benchmarks/bench.py seed [--products 10000]  load the deterministic fixture
   python3 benchmarks/bench.py run detail --rate 40 --pattern hot --trials 3
   python3 benchmarks/bench.py run page --rate 40 --sort price_asc
@@ -51,6 +51,9 @@ BACKEND_IMAGE = os.environ.get(
     "BENCH_BACKEND_IMAGE", "shopsphere-backend:bench" if PROJECT == "shopsphere-bench" else f"shopsphere-backend:{PROJECT}")
 os.environ.setdefault("BENCH_BACKEND_IMAGE", BACKEND_IMAGE)
 DATABASE = "shopsphere_bench"
+# Sprint 5: must match the broker image in docker-compose.bench.yml and events.topic in the backend.
+ROCKETMQ_IMAGE = "apache/rocketmq:5.3.2"
+EVENT_TOPIC = "catalog-product-changed"
 MYSQL_ROOT_PASSWORD = "bench-root"
 RESULTS_DIR = BENCH_DIR / "results"
 FIXTURE_DIR = RESULTS_DIR / "fixture"
@@ -103,9 +106,9 @@ def sh(cmd: list[str], *, check: bool = True, capture: bool = False, stdin=None,
 
 
 def compose(*args: str, observability: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    # The search profile is always on: `up` names its services explicitly, so Elasticsearch only starts with
-    # --search, while exec/down can still reach it.
-    cmd = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), "--profile", "search"]
+    # The search and events profiles are always on: `up` names its services explicitly, so Elasticsearch and
+    # RocketMQ only start with --search / --events, while exec/down can still reach them.
+    cmd = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), "--profile", "search", "--profile", "events"]
     if observability:
         cmd += ["--profile", "observability"]
     return sh(cmd + list(args), **kwargs)
@@ -289,6 +292,11 @@ def backend_search_enabled() -> bool:
     return out == "true"
 
 
+def backend_events_enabled() -> bool:
+    out = compose("exec", "-T", "backend", "printenv", "EVENTS_ENABLED", capture=True, check=False).stdout.strip()
+    return out == "true"
+
+
 def es_get(path: str) -> dict:
     out = compose("exec", "-T", "elasticsearch", "curl", "--silent", "--fail", f"http://127.0.0.1:9200{path}",
                   capture=True).stdout
@@ -311,9 +319,15 @@ def rebuild_search_index(expected: int, timeout_s: float = 600) -> None:
     with urllib.request.urlopen(request, timeout=60) as response:
         queued = json.loads(response.read())["queued"]
     log(f"search rebuild: {queued} index jobs queued")
+    events = backend_events_enabled()
     while True:
-        pending = int(mysql("SELECT COUNT(*) FROM search_index_jobs", database=DATABASE)[0][0])
-        if pending == 0:
+        if events:
+            # Sprint 5: outbox rows are kept after publishing, so wait for the documents themselves.
+            es_get("/products/_refresh")
+            pending = expected - es_get("/products/_count")["count"]
+        else:
+            pending = int(mysql("SELECT COUNT(*) FROM search_index_jobs", database=DATABASE)[0][0])
+        if pending <= 0:
             break
         if time.monotonic() - started > timeout_s:
             raise SystemExit(f"search backfill still has {pending} jobs after {timeout_s:.0f}s")
@@ -692,17 +706,44 @@ def run_manifest(scenario: str, args: argparse.Namespace, fixture: dict, rate: f
 
 # --------------------------------------------------------------------------- commands
 
+def create_event_topic() -> None:
+    """Creates the ProductChanged topic (the broker never auto-creates topics). Idempotent.
+
+    mqadmin runs in a one-off container on the bench network: inside the broker container its JVM would share the
+    broker's memory limit."""
+    network = f"{PROJECT}_default"
+    deadline = time.monotonic() + 120
+    while True:
+        out = sh(["docker", "run", "--rm", "--network", network, "-e", "JAVA_OPT_EXT=-Xmx256m", ROCKETMQ_IMAGE,
+                  "sh", "mqadmin", "updateTopic", "-n", "rocketmq-namesrv:9876", "-c", "bench", "-t", EVENT_TOPIC],
+                 capture=True, check=False).stdout
+        if "success" in out:
+            log(f"RocketMQ topic {EVENT_TOPIC} ready")
+            return
+        # The broker reports healthy before its first registration with the name server.
+        if time.monotonic() > deadline:
+            raise SystemExit(f"creating RocketMQ topic {EVENT_TOPIC} failed:\n{out}")
+        time.sleep(2)
+
+
 def cmd_up(args: argparse.Namespace) -> None:
-    cache = getattr(args, "cache", None) or os.environ.get("BENCH_CACHE", "none")
+    events = bool(getattr(args, "events", False)) or os.environ.get("BENCH_EVENTS", "false") == "true"
+    os.environ["BENCH_EVENTS"] = "true" if events else "false"
+    # Both consumer groups need their stores: search-indexer (Elasticsearch) and cache-invalidator (Redis cache).
+    cache = "redis" if events else (getattr(args, "cache", None) or os.environ.get("BENCH_CACHE", "none"))
     os.environ["BENCH_CACHE"] = cache
-    search = bool(getattr(args, "search", False)) or os.environ.get("BENCH_SEARCH", "false") == "true"
+    search = events or bool(getattr(args, "search", False)) or os.environ.get("BENCH_SEARCH", "false") == "true"
     os.environ["BENCH_SEARCH"] = "true" if search else "false"
     os.environ["BENCH_SEARCH_ENGINE"] = "elasticsearch" if search else "mysql"
+    if events:
+        compose("up", "-d", "--wait", "rocketmq-namesrv", "rocketmq-broker")
+        create_event_topic()
     services = (["mysql", "redis"] + (["elasticsearch"] if search else []) + ["backend"]
                 + (["prometheus", "grafana"] if args.observability else []))
     compose("up", "-d", "--build", "--wait", *services, observability=args.observability)
     log(f"stack {PROJECT}: backend on http://127.0.0.1:{BACKEND_PORT} (actuator stays on the internal port 8081), "
-        f"catalog cache {backend_cache_config()['type']}, Elasticsearch {'on' if search else 'off'}")
+        f"catalog cache {backend_cache_config()['type']}, Elasticsearch {'on' if search else 'off'}, "
+        f"RocketMQ events {'on' if events else 'off'}")
     if cache == "redis":
         flush_cache()
     if args.observability:
@@ -1163,6 +1204,9 @@ def main() -> None:
                     help="catalog cache for the backend (default: $BENCH_CACHE or none); recreates the backend")
     up.add_argument("--search", action="store_true",
                     help="also start Elasticsearch and enable the search engine and indexer (default: $BENCH_SEARCH)")
+    up.add_argument("--events", action="store_true",
+                    help="also start RocketMQ and publish the catalog outbox to the search and cache consumers; "
+                         "implies --search and --cache redis (default: $BENCH_EVENTS)")
     up.set_defaults(func=cmd_up)
 
     down = sub.add_parser("down", help="stop the bench stack")
