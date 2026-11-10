@@ -16,7 +16,8 @@ import io.micrometer.core.instrument.MeterRegistry;
  * {@code search_version} as an external version, so a repeat is a version conflict and changes nothing.
  */
 @Component
-@ConditionalOnExpression("${events.enabled:false} and ${search.elasticsearch.enabled:false}")
+@ConditionalOnExpression("${events.enabled:false} and ${events.consumer.enabled:true}"
+        + " and ${search.elasticsearch.enabled:false}")
 public class SearchIndexConsumer extends ProductChangedConsumer {
 
     public static final String GROUP = "search-indexer";

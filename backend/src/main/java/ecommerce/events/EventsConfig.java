@@ -13,7 +13,8 @@ public class EventsConfig {
     /** Polls the outbox on a timer when events are on and scheduling isn't turned off (tests publish by hand). */
     @Configuration
     @EnableScheduling
-    @ConditionalOnExpression("${events.enabled:false} and ${events.publisher.schedule:true}")
+    @ConditionalOnExpression("${events.enabled:false} and ${events.publisher.enabled:true}"
+            + " and ${events.publisher.schedule:true}")
     static class PublisherSchedule {
 
         private final OutboxPublisher publisher;

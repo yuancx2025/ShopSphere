@@ -14,7 +14,7 @@ import org.apache.rocketmq.client.producer.SendStatus;
 import org.apache.rocketmq.common.message.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -36,7 +36,7 @@ import jakarta.annotation.PreDestroy;
  * One publisher per backend: two backends would only send duplicates, which consumers already tolerate.
  */
 @Component
-@ConditionalOnProperty(name = "events.enabled", havingValue = "true")
+@ConditionalOnExpression("${events.enabled:false} and ${events.publisher.enabled:true}")
 public class OutboxPublisher {
 
     static final String PRODUCER_GROUP = "catalog-outbox-publisher";

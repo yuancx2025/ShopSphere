@@ -22,7 +22,8 @@ import io.micrometer.core.instrument.MeterRegistry;
  * eviction. Unlike the annotation path, a Redis error here is thrown, so the event is retried instead of dropped.
  */
 @Component
-@ConditionalOnExpression("${events.enabled:false} and '${spring.cache.type:none}' == 'redis'")
+@ConditionalOnExpression("${events.enabled:false} and ${events.consumer.enabled:true}"
+        + " and '${spring.cache.type:none}' == 'redis'")
 public class CacheInvalidationConsumer extends ProductChangedConsumer {
 
     public static final String GROUP = "cache-invalidator";
