@@ -25,29 +25,33 @@ public class Product {
 
     @Column(name = "image_url")
     private @NotNull String imageURL;
-    private @NotNull double price;
+
+    /** Source of truth for the price, in cents. */
+    @Column(name = "price_cents", nullable = false)
+    private long priceCents;
+
+    /**
+     * Legacy DOUBLE column kept by Flyway V4 so the previous release can still read prices after a rollback.
+     * Always derived from {@link #priceCents}; never read for money math.
+     */
+    @Column(name = "price", nullable = false)
+    private double legacyPrice;
+
     private @NotNull String description;
-    private @NotNull int stock;
+
+    /**
+     * Not updatable through JPA: stock only changes through the guarded SQL in {@code ProductRepository}
+     * ({@code reserveStock}, {@code releaseStock}, {@code adjustStock}). An entity loaded before a row lock can
+     * hold a stale value, and writing it back as an absolute number would undo concurrent reservations.
+     */
+    @Column(name = "stock", nullable = false, updatable = false)
+    private int stock;
 
     @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "category_id", nullable = false)
     Category category;
 
-
-    public Product(String name, String imageURL, double price, String description, Category category) {
-        this(name, imageURL, price, description, category, 0);
-    }
-
-    public Product(String name, String imageURL, double price, String description, Category category, int stock) {
-        super();
-        this.name = name;
-        this.imageURL = imageURL;
-        this.price = price;
-        this.description = description;
-        this.category = category;
-        this.stock = stock;
-    }
 
     public Product() {
     }
@@ -76,12 +80,16 @@ public class Product {
         this.imageURL = imageURL;
     }
 
-    public double getPrice() {
-        return price;
+    public long getPriceCents() {
+        return priceCents;
     }
 
-    public void setPrice(double price) {
-        this.price = price;
+    public void setPriceCents(long priceCents) {
+        if (priceCents < 0) {
+            throw new IllegalArgumentException("price must not be negative");
+        }
+        this.priceCents = priceCents;
+        this.legacyPrice = priceCents / 100.0;
     }
 
     public String getDescription() {
@@ -104,6 +112,7 @@ public class Product {
         return stock;
     }
 
+    /** Initial stock for a new product. Has no effect on a persisted product (the column is not updatable). */
     public void setStock(int stock) {
         this.stock = stock;
     }
@@ -114,7 +123,7 @@ public class Product {
                 "id=" + id +
                 ", name='" + name + '\'' +
                 ", imageURL='" + imageURL + '\'' +
-                ", price=" + price +
+                ", priceCents=" + priceCents +
                 ", description='" + description + '\'' +
                 '}';
     }

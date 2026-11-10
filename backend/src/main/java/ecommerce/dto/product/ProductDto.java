@@ -1,7 +1,12 @@
 package ecommerce.dto.product;
 
 
+import java.math.BigDecimal;
+
+import ecommerce.common.Money;
 import ecommerce.model.Product;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
@@ -10,7 +15,11 @@ public class ProductDto {
     private Integer id;
     private @NotNull String name;
     private @NotNull String imageURL;
-    private @NotNull double price;
+    /** Decimal dollars with at most two decimals; stored exactly as cents. */
+    @NotNull
+    @DecimalMin("0.00")
+    @Digits(integer = 10, fraction = 2)
+    private BigDecimal price;
     private @NotNull String description;
     private @NotNull Integer categoryId;
     private @NotNull @Min(0) Integer stock;
@@ -18,7 +27,7 @@ public class ProductDto {
     public ProductDto(
             @NotNull String name,
             @NotNull String imageURL,
-            @NotNull double price,
+            @NotNull BigDecimal price,
             @NotNull String description,
             @NotNull Integer categoryId,
             @NotNull Integer stock) {
@@ -35,7 +44,7 @@ public class ProductDto {
         this.setName(product.getName());
         this.setImageURL(product.getImageURL());
         this.setDescription(product.getDescription());
-        this.setPrice(product.getPrice());
+        this.setPrice(Money.fromCents(product.getPriceCents()));
         this.setCategoryId(product.getCategory().getId());
         this.setStock(product.getStock());
     }
@@ -67,11 +76,11 @@ public class ProductDto {
         this.imageURL = imageURL;
     }
 
-    public double getPrice() {
+    public BigDecimal getPrice() {
         return price;
     }
 
-    public void setPrice(double price) {
+    public void setPrice(BigDecimal price) {
         this.price = price;
     }
 

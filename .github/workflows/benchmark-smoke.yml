@@ -1,0 +1,49 @@
+name: Benchmark smoke
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'benchmarks/**'
+      - 'backend/**'
+      - '.github/workflows/benchmark-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    # Correct responses must pass the gate and a wrong expected id must fail it.
+    - name: Run benchmark smoke
+      env:
+        BENCH_BACKEND_CPUS: '1.5'
+        BENCH_MYSQL_CPUS: '1'
+        BENCH_K6_CPUS: '1'
+      run: python3 benchmarks/bench.py smoke
+
+    - name: Show stack logs
+      if: failure()
+      run: docker compose -f benchmarks/docker-compose.bench.yml logs --no-color --tail 200
+
+    - name: Upload smoke results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-smoke
+        path: benchmarks/results/runs
+        retention-days: 7
+        if-no-files-found: ignore
+
+    - name: Tear down
+      if: always()
+      run: python3 benchmarks/bench.py down --volumes

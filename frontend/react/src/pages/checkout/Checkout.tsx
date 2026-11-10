@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { CartResponse, CheckoutSession } from '../../types';
 import { authHeaders } from '../../utils/auth';
@@ -8,7 +8,15 @@ interface Props {
   baseURL: string;
 }
 
+function newCheckoutKey(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 const Checkout: React.FC<Props> = ({ baseURL }) => {
+  // One key per checkout attempt. A double click reuses it, so the server returns the same
+  // reservation and payment session instead of reserving the cart twice.
+  const checkoutKey = useRef<string>(newCheckoutKey());
   const [token, setToken] = useState<string | null>(null);
   const [cartEmpty, setCartEmpty] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -33,7 +41,9 @@ const Checkout: React.FC<Props> = ({ baseURL }) => {
     setSubmitting(true);
     setError(null);
     axios
-      .post<CheckoutSession>(`${baseURL}order/create-checkout-session`, null, { headers: authHeaders() })
+      .post<CheckoutSession>(`${baseURL}order/create-checkout-session`, null, {
+        headers: { ...authHeaders(), 'Idempotency-Key': checkoutKey.current },
+      })
       .then((response) => {
         if (response.data.url) {
           window.location.href = response.data.url;

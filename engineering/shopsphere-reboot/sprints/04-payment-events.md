@@ -2,7 +2,15 @@
 
 [Roadmap](../README.md) · [Previous sprint](03-elasticsearch-search.md) · [Next sprint](05-rocketmq-workers.md)
 
-**Time** · 2 weeks. **Depends on** · Sprint 1's payment and inventory invariants. Sprint 3 can run in parallel.
+**Status** · **Deferred.** Payment work is out of scope until Sprints 5–7 are done; no sprint depends on it any more (Sprint 5 uses catalog events instead of `OrderPaid`). The plan below is kept for when it resumes.
+
+**Deferred payment follow-ups from Sprint 1**
+- Ambiguous provider outcomes: a create-session timeout currently cancels the attempt and releases stock. Add retry-with-same-key or reconciliation if needed, plus fake-gateway timeout behaviors to test it.
+- A background reconciler for lost webhooks (today the webhook and the success page's reconcile call apply payments).
+- Operator handling for `NEEDS_REVIEW` orders (refund or manual fulfillment).
+- Any new payment tests or benchmarks. The existing `PaymentOutcomeTest` stays as a regression suite.
+
+**Time** · 2 weeks. **Depends on** · Sprint 1's payment and inventory invariants.
 
 ## What to learn
 
@@ -22,7 +30,7 @@
 | Target | How to prove it |
 | --- | --- |
 | Zero missing accepted events or duplicate paid transitions in the test matrix | Submit an identified set of 1,000 signed test deliveries including repeated event IDs. Add distinct events for the same order, race reconciliation, and reconcile accepted IDs, transitions and outbox rows after restart. |
-| P95 webhook acknowledgment under 150 ms at an initial 20 deliveries/sec | Compare the existing synchronous handler and durable inbox under the same signed input and fake provider timing. Report accepted acknowledgment and received-to-processed P95 separately. |
+| P95 webhook acknowledgment under 150 ms at an initial 20 deliveries/sec | Compare the existing synchronous handler and durable inbox under the same signed input and fake provider timing. Report accepted acknowledgment and received-to-processed P95 separately. The existing handler calls Stripe during the request, so record the injected provider delay with the result. |
 | Durable behavior at the commit boundaries | Fail before inbox commit, after inbox acknowledgment, and after order/outbox commit. Verify the handler and worker can resume and the first paid transition creates one outbox row. |
 
 ## Implementation PRs
@@ -38,6 +46,6 @@
 
 **Acknowledgment version.** “Reduced Stripe webhook acknowledgment P95 from [A] ms to [B] ms at [R] deliveries/sec in a controlled test by persisting events before asynchronous processing.”
 
-Choose the acknowledgment version only after measuring both versions with the same provider behavior. Keep payment-processing lag and the failure matrix as supporting evidence.
+Lead with the reliability version. With a fake provider, the old handler's acknowledgment time mostly reflects the delay you inject, so choose the acknowledgment version only after measuring both versions with the same provider behavior, and state that delay. Keep payment-processing lag and the failure matrix as supporting evidence.
 
 [Stripe webhooks](https://docs.stripe.com/webhooks)

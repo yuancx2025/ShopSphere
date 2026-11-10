@@ -4,13 +4,21 @@
 
 These are future project entries for a one-page software engineering résumé. Bracketed fields are placeholders. Copy a bullet after its feature and benchmark or correctness test are complete. Use a shorter technology line when the bullets already name the supporting tools.
 
+> Payment work (Sprint 4) is deferred. Skip payment-correctness bullets such as "one paid transition per order" until it is done; inventory and catalog-event bullets do not depend on it.
+
+## Choosing the lead bullet
+
+Correctness results (zero oversells, one paid transition per order, zero duplicate confirmations, a tested rollback) are the most likely to hold and the easiest to defend. Every version below opens with the Redis result, which is the least certain: it needs stock off the cached read path and a comparison near the uncached variant's capacity (see [Sprint 2](../sprints/02-redis-cache.md)). If the cache gain is modest, lead with an inventory or payment correctness bullet. Rates in the tens per second read as small, so quote them only with the bottleneck explanation in the report.
+
+For the technology line, RocketMQ is widely recognized by employers in China. US reviewers more often know Kafka or SQS, so be ready to compare RocketMQ with Kafka in an interview.
+
 ## Final version for backend and general SWE
 
 **ShopSphere | E-Commerce Platform** · Java, Spring Boot, MySQL, Redis, Elasticsearch, RocketMQ
 
 - Reduced Spring Boot product-detail P95 from [A] ms to [B] ms and MySQL reads per request by [D]% at [R] synthetic RPS using Redis cache-aside caching.
-- Built Elasticsearch product search across [N] products with full-text ranking and category/price filters, improving held-out NDCG@10 from [Q0] to [Q1] over MySQL FULLTEXT.
-- Designed a Stripe webhook inbox and RocketMQ order-event pipeline with a MySQL transactional outbox and idempotent workers, processing [U] unique events/sec and observing zero duplicate simulated confirmations in replay tests.
+- Built Elasticsearch product search with full-text ranking and category/price filters, improving held-out NDCG@10 on the WANDS product-search dataset from [Q0] to [Q1] over MySQL FULLTEXT.
+- Designed a Stripe webhook inbox and RocketMQ order-event pipeline with a MySQL transactional outbox and idempotent workers, observing zero duplicate simulated confirmations across [N] replayed and crash-injected events.
 
 Use this version when the strongest evidence covers the catalog, search and event-processing work. Add a GitHub link to the project heading in the actual résumé. If the search result is inconclusive, use the search freshness or checkout reliability wording below.
 
@@ -40,9 +48,11 @@ If pagination produced a stronger result, replace the first bullet with the sepa
 
 | Emphasis | Draft wording |
 | --- | --- |
+| Catalog capacity | Raised the highest passing product-read load from [X] to [Y] RPS at [P] ms P95 with Redis cache-aside caching, cutting MySQL reads per request by [D]%. |
 | Search freshness | Indexed [N] products in Elasticsearch and built a retryable MySQL-to-search sync, making catalog updates searchable within [L] seconds at P95. |
 | Payment correctness | Hardened Stripe checkout with verified payment amounts and a durable webhook inbox, preserving accepted events across injected restarts and recording one paid transition per order across [N] replayed deliveries. |
 | Inventory concurrency | Validated MySQL row-locked stock reservation with [N] synthetic checkout attempts against constrained inventory, observing zero oversells and reconciling reserved, released and sold units. |
+| Inventory fix | Closed a lost-update path in admin stock edits and validated MySQL row-locked reservations, observing zero oversells across [N] synthetic checkout attempts raced against admin edits. |
 | Flash-sale resilience | Implemented Redis-backed rate limiting across two Spring Boot replicas, sustaining [S]% checkout success during a [R]-RPS synthetic browse/search spike with [E]% unexpected failures. |
 | Deployment only | Deployed a Dockerized Spring Boot and React staging stack to AWS EC2 and verified automated deployment, smoke checks and rollback through GitHub Actions. |
 
@@ -50,7 +60,7 @@ If pagination produced a stronger result, replace the first bullet with the sepa
 
 | Existing capability | Add this once verified |
 | --- | --- |
-| Product catalog backed by MySQL | Matched-load P95 and SQL-read results from the Redis comparison |
+| Product catalog backed by MySQL | Capacity, matched-load P95 or SQL-read results from the Redis comparison |
 | Browsable products and categories | Ranked search with held-out relevance or measured index freshness |
 | Stripe checkout and stock reservation | Verified inventory invariants plus durable, replay-tested payment events |
 | Dockerized local application | A staging deployment with tested rollback or a cloud capacity result |

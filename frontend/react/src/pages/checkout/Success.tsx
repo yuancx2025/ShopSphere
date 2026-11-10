@@ -49,6 +49,11 @@ const PaymentSuccess: React.FC<Props> = ({ baseURL }) => {
             setMessage('Payment successful. Your order is confirmed.');
             return;
           }
+          if (response.data.status === 'NEEDS_REVIEW') {
+            setOrderId(response.data.id);
+            setMessage('Payment received. We need to review this order before confirming it; we will refund you if it cannot be fulfilled.');
+            return;
+          }
           retry();
         })
         .catch((error) => {

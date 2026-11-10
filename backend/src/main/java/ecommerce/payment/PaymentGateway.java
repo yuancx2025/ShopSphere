@@ -6,10 +6,13 @@ package ecommerce.payment;
  */
 public interface PaymentGateway {
 
-    /** Creates a hosted checkout session and returns the redirect URL. */
+    /**
+     * Creates a hosted checkout session and returns the redirect URL. Must be idempotent on
+     * {@link CheckoutCommand#getIdempotencyKey()}: a retry returns the session the first call created.
+     */
     PaymentSession createSession(CheckoutCommand command);
 
-    /** Fetches current payment status for fulfillment and reconciliation. */
+    /** Fetches current payment status, amount and currency for fulfillment and reconciliation. */
     PaymentSession retrieveSession(String sessionId);
 
     /** Best-effort invalidation of an abandoned session (errors are swallowed). */

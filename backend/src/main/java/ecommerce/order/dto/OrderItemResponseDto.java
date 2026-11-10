@@ -1,12 +1,15 @@
 package ecommerce.order.dto;
 
+import java.math.BigDecimal;
+
 public class OrderItemResponseDto {
 
     private Integer productId;
     private String productName;
     private String imageURL;
     private int quantity;
-    private double price;
+    /** Unit price in decimal dollars, derived from exact cents. */
+    private BigDecimal price;
 
     public OrderItemResponseDto() {
     }
@@ -16,7 +19,7 @@ public class OrderItemResponseDto {
             String productName,
             String imageURL,
             int quantity,
-            double price) {
+            BigDecimal price) {
         this.productId = productId;
         this.productName = productName;
         this.imageURL = imageURL;
@@ -56,11 +59,11 @@ public class OrderItemResponseDto {
         this.quantity = quantity;
     }
 
-    public double getPrice() {
+    public BigDecimal getPrice() {
         return price;
     }
 
-    public void setPrice(double price) {
+    public void setPrice(BigDecimal price) {
         this.price = price;
     }
 }

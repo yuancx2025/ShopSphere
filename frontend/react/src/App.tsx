@@ -25,27 +25,23 @@ import PaymentFailed from './pages/checkout/Failed';
 import OrderHistory from './pages/order/OrderHistory';
 import OrderDetails from './pages/order/OrderDetails';
 
-import { Category, Product } from './types';
+import { Category } from './types';
 import { API_BASE_URL } from './utils/constants';
 
 const baseURL = API_BASE_URL;
 
 const App: React.FC = () => {
-  const [products, setProducts] = useState<Product[] | null>(null);
+  // Products are no longer loaded up front: each page fetches a bounded slice from /product/page.
   const [categories, setCategories] = useState<Category[] | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const [prodRes, catRes] = await Promise.all([
-        axios.get<Product[]>(`${baseURL}product/`),
-        axios.get<Category[]>(`${baseURL}category/`),
-      ]);
-      setProducts(prodRes.data);
+      const catRes = await axios.get<Category[]>(`${baseURL}category/`);
       setCategories(catRes.data);
     } catch (error) {
-      console.error('Failed to load products/categories', error);
+      console.error('Failed to load categories', error);
     } finally {
       setLoading(false);
     }
@@ -62,12 +58,12 @@ const App: React.FC = () => {
         <Routes>
           <Route
             path="/"
-            element={<Home products={products} categories={categories} loading={loading} />}
+            element={<Home categories={categories} loading={loading} />}
           />
           <Route
             path="/category/:id"
             element={
-              <CategoryShop products={products} categories={categories} loading={loading} />
+              <CategoryShop categories={categories} loading={loading} />
             }
           />
           <Route
@@ -116,7 +112,7 @@ const App: React.FC = () => {
             path="/admin/product"
             element={
               <RequireAdmin>
-                <ProductPage products={products} loading={loading} />
+                <ProductPage />
               </RequireAdmin>
             }
           />
@@ -124,25 +120,14 @@ const App: React.FC = () => {
             path="/admin/product/:id"
             element={
               <RequireAdmin>
-                <EditProduct
-                  baseURL={baseURL}
-                  products={products}
-                  categories={categories}
-                  fetchData={fetchData}
-                  loading={loading}
-                />
+                <EditProduct baseURL={baseURL} categories={categories} loading={loading} />
               </RequireAdmin>
             }
           />
           <Route
             path="/product/show/:id"
             element={
-              <ShowDetails
-                baseURL={baseURL}
-                products={products}
-                categories={categories}
-                loading={loading}
-              />
+              <ShowDetails baseURL={baseURL} categories={categories} loading={loading} />
             }
           />
           <Route path="/signup" element={<Signup baseURL={baseURL} />} />

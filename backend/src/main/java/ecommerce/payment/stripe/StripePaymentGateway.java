@@ -1,9 +1,9 @@
 package ecommerce.payment.stripe;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import com.stripe.Stripe;
@@ -23,6 +23,7 @@ import jakarta.annotation.PostConstruct;
  * that imports {@code com.stripe.*}.
  */
 @Component
+@ConditionalOnProperty(name = "payment.provider", havingValue = "stripe", matchIfMissing = true)
 public class StripePaymentGateway implements PaymentGateway {
 
     private final StripeProperties stripeProperties;
@@ -48,7 +49,7 @@ public class StripePaymentGateway implements PaymentGateway {
             lineItems.add(SessionCreateParams.LineItem.builder()
                     .setQuantity(item.getQuantity())
                     .setPriceData(SessionCreateParams.LineItem.PriceData.builder()
-                            .setCurrency("usd")
+                            .setCurrency(command.getCurrency())
                             .setUnitAmount(item.getUnitAmountCents())
                             .setProductData(SessionCreateParams.LineItem.PriceData.ProductData.builder()
                                     .setName(item.getProductName())
@@ -69,15 +70,16 @@ public class StripePaymentGateway implements PaymentGateway {
                 // metadata.orderId lets OrderService find the order if sessionId was never saved
                 .putMetadata("orderId", String.valueOf(command.getOrderId()))
                 .putMetadata("userId", String.valueOf(command.getUserId()))
-                .setExpiresAt(Instant.now().plusSeconds(stripeProperties.getSessionTtlSeconds()).getEpochSecond());
+                // Fixed at reservation time: a retry must send identical parameters with the same idempotency key.
+                .setExpiresAt(command.getExpiresAt().getEpochSecond());
 
         if (command.getCustomerEmail() != null && !command.getCustomerEmail().isBlank()) {
             params.setCustomerEmail(command.getCustomerEmail());
         }
 
         RequestOptions options = RequestOptions.builder()
-                // Retries with the same key return the same session instead of double-charging.
-                .setIdempotencyKey("checkout-order-" + command.getOrderId())
+                // Retries of the same checkout attempt return the session the first request created.
+                .setIdempotencyKey(command.getIdempotencyKey())
                 .build();
         try {
             return toPaymentSession(Session.create(params.build(), options));
@@ -85,6 +87,7 @@ public class StripePaymentGateway implements PaymentGateway {
             throw new PaymentException("Unable to start payment", ex);
         }
     }
+
 
     @Override
     public PaymentSession retrieveSession(String sessionId) {
@@ -125,7 +128,8 @@ public class StripePaymentGateway implements PaymentGateway {
                 }
             }
         }
-        return new PaymentSession(session.getId(), session.getUrl(), session.getPaymentStatus(), orderId);
+        return new PaymentSession(session.getId(), session.getUrl(), session.getPaymentStatus(), orderId,
+                session.getAmountTotal(), session.getCurrency());
     }
 
     private String trimBaseUrl(String url) {

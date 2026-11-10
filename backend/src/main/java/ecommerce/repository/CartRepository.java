@@ -4,6 +4,9 @@ import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import ecommerce.model.Cart;
@@ -15,6 +18,10 @@ public interface CartRepository extends JpaRepository<Cart, Integer> {
     List<Cart> findAllByUserOrderByCreatedDateDesc(User user);
 
     void deleteByUser(User user);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("DELETE FROM Cart c WHERE c.user.id = :userId")
+    int deleteAllByUserId(@Param("userId") Integer userId);
 
     Optional<Cart> findByUserAndProduct(User user, Product product);
 

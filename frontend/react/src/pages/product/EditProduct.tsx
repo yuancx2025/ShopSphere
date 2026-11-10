@@ -1,78 +1,86 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import swal from 'sweetalert';
-import { Category, Product } from '../../types';
+import { Category, StockAdjustmentResult } from '../../types';
 import { authHeaders } from '../../utils/auth';
+import { fetchProduct } from '../../utils/catalog';
 
 interface Props {
   baseURL: string;
-  products: Product[] | null;
   categories: Category[] | null;
-  fetchData: () => Promise<void>;
   loading: boolean;
 }
 
-const EditProduct: React.FC<Props> = ({ baseURL, products, categories, fetchData, loading }) => {
+/**
+ * Edits a product's descriptive fields. Stock is not part of the form: saving the stock value the form loaded
+ * would undo reservations made since. Stock changes are signed adjustments instead.
+ */
+const EditProduct: React.FC<Props> = ({ baseURL, categories, loading }) => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [loaded, setLoaded] = useState(false);
   const [categoryId, setCategoryId] = useState<number | undefined>();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [imageURL, setImageURL] = useState('');
   const [price, setPrice] = useState<number | undefined>();
   const [stock, setStock] = useState<number>(0);
-
-  const currentProduct = useMemo(() => {
-    if (!products || !id) return null;
-    return products.find((p) => p.id === Number(id)) || null;
-  }, [products, id]);
+  const [delta, setDelta] = useState<number>(0);
 
   useEffect(() => {
-    if (currentProduct) {
-      setCategoryId(currentProduct.categoryId);
-      setName(currentProduct.name);
-      setDescription(currentProduct.description);
-      setImageURL(currentProduct.imageURL);
-      setPrice(currentProduct.price);
-      setStock(currentProduct.stock ?? 0);
-    }
-  }, [currentProduct]);
+    if (!id) return;
+    fetchProduct(Number(id))
+      .then((product) => {
+        setCategoryId(product.categoryId);
+        setName(product.name);
+        setDescription(product.description);
+        setImageURL(product.imageURL);
+        setPrice(product.price);
+        setStock(product.stock ?? 0);
+        setLoaded(true);
+      })
+      .catch((err) => console.error(err));
+  }, [id]);
 
   const editProduct = async () => {
     if (!id || !categoryId || price === undefined) return;
-    const updatedProduct = {
-      id: Number(id),
-      categoryId,
-      name,
-      description,
-      imageURL,
-      price,
-      stock,
-    };
-
+    const updatedProduct = { categoryId, name, description, imageURL, price };
     try {
       await axios.post(`${baseURL}product/update/${id}`, updatedProduct, {
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
       });
-      await fetchData();
       navigate('/admin/product');
-      swal({
-        text: 'Product Updated Successfully!',
-        icon: 'success',
-        closeOnClickOutside: false,
-      });
+      swal({ text: 'Product Updated Successfully!', icon: 'success', closeOnClickOutside: false });
     } catch (err) {
       console.error(err);
+      swal({ text: 'Unable to update product', icon: 'error', closeOnClickOutside: false });
+    }
+  };
+
+  const adjustStock = async () => {
+    if (!id || delta === 0) return;
+    try {
+      const response = await axios.post<StockAdjustmentResult>(
+        `${baseURL}product/${id}/stock-adjustments`,
+        { delta },
+        { headers: { 'Content-Type': 'application/json', ...authHeaders() } },
+      );
+      setStock(response.data.stock);
+      setDelta(0);
+      swal({ text: `Stock is now ${response.data.stock}`, icon: 'success', closeOnClickOutside: false });
+    } catch (err) {
+      console.error(err);
+      const data = axios.isAxiosError(err) ? err.response?.data : undefined;
       swal({
-        text: 'Unable to update product',
+        text: typeof data === 'string' ? data : 'Unable to adjust stock',
         icon: 'error',
         closeOnClickOutside: false,
       });
     }
   };
 
-  if (loading || !currentProduct || !categories) return <div className="text-center p-5">Loading...</div>;
+  if (loading || !loaded || !categories) return <div className="text-center p-5">Loading...</div>;
 
   return (
     <div className="container">
@@ -106,13 +114,7 @@ const EditProduct: React.FC<Props> = ({ baseURL, products, categories, fetchData
             </div>
             <div className="form-group">
               <label>Name</label>
-              <input
-                type="text"
-                className="form-control"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-              />
+              <input type="text" className="form-control" value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="form-group">
               <label>Description</label>
@@ -126,37 +128,39 @@ const EditProduct: React.FC<Props> = ({ baseURL, products, categories, fetchData
             </div>
             <div className="form-group">
               <label>ImageURL</label>
-              <input
-                type="url"
-                className="form-control"
-                value={imageURL}
-                onChange={(e) => setImageURL(e.target.value)}
-                required
-              />
+              <input type="url" className="form-control" value={imageURL} onChange={(e) => setImageURL(e.target.value)} required />
             </div>
             <div className="form-group">
               <label>Price</label>
               <input
                 type="number"
+                step="0.01"
+                min={0}
                 className="form-control"
                 value={price ?? ''}
                 onChange={(e) => setPrice(Number(e.target.value))}
                 required
               />
             </div>
-            <div className="form-group">
-              <label>Stock</label>
-              <input
-                type="number"
-                className="form-control"
-                min={0}
-                value={stock}
-                onChange={(e) => setStock(Number(e.target.value))}
-                required
-              />
-            </div>
             <button type="button" className="btn btn-primary" onClick={editProduct}>
               Submit
+            </button>
+          </form>
+
+          <hr />
+          <h5>Stock: {stock}</h5>
+          <form onSubmit={(e) => e.preventDefault()}>
+            <div className="form-group">
+              <label>Adjust by (+ received, − damaged or lost)</label>
+              <input type="number" className="form-control" value={delta} onChange={(e) => setDelta(Number(e.target.value))} />
+            </div>
+            <button
+              type="button"
+              className="btn btn-outline-primary"
+              onClick={adjustStock}
+              disabled={delta === 0}
+            >
+              Apply adjustment
             </button>
           </form>
         </div>

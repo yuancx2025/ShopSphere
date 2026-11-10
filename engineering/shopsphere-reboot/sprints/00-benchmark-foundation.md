@@ -9,11 +9,13 @@
 - Explain the difference between virtual users, in-flight requests, scheduled iterations, delivered HTTP RPS, and successful goodput.
 - Choose fixed arrival rate for comparable server load and fixed VUs with think time for shopper journeys. Explain what dropped iterations reveal about the generator or the application.
 - Explain why a per-route P95 tells a different story from an average. Use k6 for client timing and Spring/Micrometer histograms for server-side diagnosis.
+- Use Little's law (requests in flight = arrival rate × latency) to judge whether a load level stresses anything. At 40 RPS and 10 ms, fewer than one request is in flight.
 
 ## What to implement
 
 - **Benchmark code.** Add `benchmarks/seed/` with deterministic synthetic products, categories, users, carts and a hot-SKU inventory fixture. Record the seed, fixture version, and known IDs. Add k6 scripts in `benchmarks/k6/` for catalog/list and detail. Prepare a checkout scenario skeleton that uses a fake provider once Sprint 1 supplies it.
-- **Workload.** Start the detail test at 40 offered requests/sec with one request per iteration. Test uniform and hot-key access separately. Use a modest dataset for the legacy unbounded list and record response bytes. Add an explicit check for the expected product ID or list shape so HTTP 200 alone does not pass.
+- **Workload.** Start the detail test at 40 offered requests/sec with one request per iteration as a calibration point, then step the rate (for example 40, 200, 500, 1,000 and 2,000 RPS) until the gate fails. Later sprints compare variants near the highest passing step. Test uniform and hot-key access separately. Use a modest dataset for the legacy unbounded list and record response bytes. Add an explicit check for the expected product ID or list shape so HTTP 200 alone does not pass.
+- **Request setup.** Send catalog requests anonymously, because `JwtAuthenticationFilter` runs a user query for every request with a bearer token. For authenticated scenarios, sign in each seeded user once in k6 `setup()` and reuse the tokens, since bcrypt sign-ins during measurement would dominate CPU. Set an explicit request timeout and record where k6 ran relative to the application.
 - **Infrastructure.** Add the Prometheus Micrometer registry in `backend/pom.xml`, enable HTTP duration buckets in a benchmark profile, and keep `/actuator/prometheus` internal. Add a Compose overlay and a Grafana dashboard with per-route request rate, error rate, latency, Hikari pool pressure and JVM CPU/heap. Use route templates as tags. Measure database reads with deltas from MySQL statement digests or narrowly scoped application counters.
 - **Reproduction.** Document how to start the stack, reset fixtures, warm up, run the test and save the results. Save the raw k6 summaries and a run manifest. Give full capacity tests a manual entry point and use a small smoke run for CI.
 
@@ -23,6 +25,7 @@
 | --- | --- |
 | Three repeatable baseline trials at an initial 40 RPS on the detail route | Two-minute warm-up and five-minute measurement per trial. Start with 12,000 scheduled single-request iterations per trial and record actual delivered requests. Use a lower calibration rate if 40 RPS fails. |
 | A valid, understandable run | Record P50/P95/P99, delivered RPS, successful goodput, error and timeout counts, dropped iterations, payload size, and SQL reads per successful request. Diagnose any drops before using the run for a performance comparison. |
+| Highest passing step per route | Step the offered rate until the gate fails. Re-run the highest passing step three times and record the first failing step. Later A/B comparisons use a rate near this point. |
 | Baseline bottleneck | Save one load step with corresponding dashboard evidence of the first observable constraint, such as connection-pool saturation or application CPU. Label this as an observation unless a follow-up experiment isolates the cause. |
 
 ## Implementation PRs

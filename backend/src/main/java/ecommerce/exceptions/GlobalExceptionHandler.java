@@ -21,6 +21,16 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(exception.getMessage(), HttpStatus.CONFLICT);
     }
 
+    @ExceptionHandler(value = CheckoutAttemptClosedException.class)
+    public final ResponseEntity<String> handleCheckoutAttemptClosed(CheckoutAttemptClosedException exception) {
+        return new ResponseEntity<>(exception.getMessage(), HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(value = BadRequestException.class)
+    public final ResponseEntity<String> handleBadRequest(BadRequestException exception) {
+        return new ResponseEntity<>(exception.getMessage(), HttpStatus.BAD_REQUEST);
+    }
+
     @ExceptionHandler(value = ProductNotExistException.class)
     public final ResponseEntity<String> handleProductNotExistException(ProductNotExistException exception) {
         return new ResponseEntity<>(exception.getMessage(), HttpStatus.BAD_REQUEST);
