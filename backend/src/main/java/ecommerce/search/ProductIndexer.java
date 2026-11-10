@@ -3,6 +3,7 @@ package ecommerce.search;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -114,6 +115,16 @@ public class ProductIndexer {
             lag.record(job.ageMicros() + elapsedMicros, TimeUnit.MICROSECONDS);
         }
         return batch.size();
+    }
+
+    /**
+     * Upserts the current rows of these products now, for the Sprint 5 search consumer. Throws if Elasticsearch
+     * fails, so the event is redelivered. Synchronized with {@link #rebuild()} for the same reason as
+     * {@link #drainOnce()}.
+     */
+    public synchronized void indexNow(Collection<Integer> productIds) throws IOException {
+        ensureIndex();
+        upsert(rows.documents(productIds));
     }
 
     /** Drains until the queue is empty or a drain fails. Returns the jobs completed. */
