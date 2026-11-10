@@ -1,0 +1,73 @@
+name: Sprint 2 cloud benchmark
+
+on:
+  push:
+    branches: [codex/sprint-2-cloud-benchmark, claude/cache-hit-miss-cloud]
+    paths:
+      - .github/workflows/sprint2-cloud-benchmark.yml
+      - benchmarks/**
+      - backend/**
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Benchmark harness regression tests
+        run: python3 -m unittest discover -s benchmarks
+      - name: Backend tests with MySQL and Redis
+        working-directory: backend
+        run: ./mvnw -B test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-results
+          path: backend/target/surefire-reports
+          retention-days: 14
+
+  benchmark:
+    name: benchmark (${{ matrix.scenario }}, ${{ matrix.rate }}, ${{ matrix.block }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {scenario: split, block: 1, rate: '500'}
+          - {scenario: split, block: 2, rate: '500'}
+          - {scenario: split, block: 3, rate: '500'}
+          - {scenario: split, block: 1, rate: '1250'}
+          - {scenario: split, block: 2, rate: '1250'}
+          - {scenario: split, block: 3, rate: '1250'}
+    env:
+      BENCH_BACKEND_CPUS: '1.5'
+      BENCH_MYSQL_CPUS: '1'
+      BENCH_K6_CPUS: '1'
+      BENCH_REDIS_CPUS: '0.5'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run benchmark
+        run: >-
+          python3 benchmarks/sprint2_cloud.py "${{ matrix.scenario }}"
+          --block "${{ matrix.block }}" --rate "${{ matrix.rate }}"
+          --rates 250,500,750,1000,1250,1500,1750,2000,2250,2500,3000
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-${{ matrix.scenario }}-${{ matrix.rate }}-${{ matrix.block }}
+          path: benchmarks/results/runs
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Tear down
+        if: always()
+        run: python3 benchmarks/bench.py down --volumes

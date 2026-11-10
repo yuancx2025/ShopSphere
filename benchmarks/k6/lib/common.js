@@ -18,6 +18,19 @@ export const successfulRequests = new Counter('successful_requests');
 export const unexpectedFailures = new Rate('unexpected_failures');
 // Body length in characters (equal to bytes for this ASCII JSON).
 export const responseBytes = new Trend('response_bytes');
+// Latency split by the backend's X-Cache header (HIT: served from Redis, MISS: read from MySQL).
+// Only routes that send the header, and only with the cache on, add samples.
+export const cacheHitDuration = new Trend('cache_hit_duration', true);
+export const cacheMissDuration = new Trend('cache_miss_duration', true);
+
+export function recordCacheOutcome(res) {
+  const outcome = res.headers['X-Cache'];
+  if (outcome === 'HIT') {
+    cacheHitDuration.add(res.timings.duration);
+  } else if (outcome === 'MISS') {
+    cacheMissDuration.add(res.timings.duration);
+  }
+}
 
 export function requireEnvNumber(name) {
   const value = Number(__ENV[name]);

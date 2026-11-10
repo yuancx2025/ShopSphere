@@ -9,7 +9,7 @@
 import http from 'k6/http';
 import exec from 'k6/execution';
 import {
-  BASE_URL, REQUEST_TIMEOUT, arrivalScenario, gateThresholds, recordOutcome,
+  BASE_URL, REQUEST_TIMEOUT, arrivalScenario, gateThresholds, recordCacheOutcome, recordOutcome,
   requireEnvNumber, summaryTrendStats, unitHash, writeSummary,
 } from './lib/common.js';
 
@@ -54,6 +54,7 @@ export default function () {
     timeout: REQUEST_TIMEOUT,
   });
   recordOutcome(res, 'detail', (r) => r.json('id') === expected);
+  recordCacheOutcome(res);
 }
 
 export function handleSummary(data) {

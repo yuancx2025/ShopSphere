@@ -10,13 +10,12 @@ import org.springframework.data.redis.cache.RedisCache;
 import io.micrometer.core.instrument.MeterRegistry;
 
 /**
- * A Redis cache that steps aside for a short window after a Redis error, so a slow or unreachable Redis costs one
- * timeout and then plain MySQL reads, instead of a timeout on every request.
+ * A Redis cache that steps aside for a short window after a Redis error. Requests that reach Redis before
+ * the window opens can still time out concurrently.
  *
  * <p>While the window is open, reads are misses (the method runs against MySQL) and writes are skipped; both count
- * as {@code catalog_cache_bypassed_total}. Evictions always go to Redis, so an admin write never skips one.
- * The first request after the window tries Redis again. That is the whole "circuit breaker": no half-open state,
- * no error-rate threshold.
+ * as separate operations in {@code catalog_cache_bypassed_total}. Evictions always go to Redis, so an admin write never skips one.
+ * Requests that arrive after the window closes try Redis again.
  */
 final class RedisBypassCache implements Cache {
 
@@ -65,17 +64,17 @@ final class RedisBypassCache implements Cache {
 
     @Override
     public ValueWrapper get(Object key) {
-        return bypassed() ? null : redis.get(key);
+        return bypassed("get") ? null : redis.get(key);
     }
 
     @Override
     public <T> T get(Object key, Class<T> type) {
-        return bypassed() ? null : redis.get(key, type);
+        return bypassed("get") ? null : redis.get(key, type);
     }
 
     @Override
     public <T> T get(Object key, Callable<T> valueLoader) {
-        if (bypassed()) {
+        if (bypassed("get")) {
             try {
                 return valueLoader.call();
             } catch (Exception ex) {
@@ -87,7 +86,7 @@ final class RedisBypassCache implements Cache {
 
     @Override
     public void put(Object key, Object value) {
-        if (!bypassed()) {
+        if (!bypassed("put")) {
             redis.put(key, value);
         }
     }
@@ -102,13 +101,13 @@ final class RedisBypassCache implements Cache {
         redis.clear();
     }
 
-    private boolean bypassed() {
+    private boolean bypassed(String operation) {
         if (!window.isOpen()) {
             return false;
         }
         MeterRegistry registry = meterRegistry.getIfAvailable();
         if (registry != null) {
-            registry.counter("catalog.cache.bypassed", "cache", getName()).increment();
+            registry.counter("catalog.cache.bypassed", "cache", getName(), "operation", operation).increment();
         }
         return true;
     }

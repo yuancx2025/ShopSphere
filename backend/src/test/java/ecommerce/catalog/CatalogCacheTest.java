@@ -2,15 +2,23 @@ package ecommerce.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.test.util.AopTestUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -24,6 +32,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ecommerce.dto.product.ProductUpdateDto;
 import ecommerce.exceptions.InsufficientStockException;
 import ecommerce.model.Category;
+import ecommerce.model.Product;
 import ecommerce.model.User;
 import ecommerce.order.OrderService;
 import ecommerce.payment.fake.FakePaymentGateway;
@@ -43,7 +52,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * told apart from a fresh read.
  */
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"spring.cache.type=redis", "catalog.cache.bypass-after-error=300ms"})
+@TestPropertySource(properties = {"spring.cache.type=redis", "catalog.cache.bypass-after-error=1s"})
 class CatalogCacheTest extends MySqlIntegrationTest {
 
     static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.4.2-alpine").withExposedPorts(6379);
@@ -69,7 +78,7 @@ class CatalogCacheTest extends MySqlIntegrationTest {
     ObjectMapper json;
     @Autowired
     StringRedisTemplate redis;
-    @Autowired
+    @SpyBean(proxyTargetAware = true)
     ProductService productService;
     @Autowired
     OrderService orderService;
@@ -145,6 +154,39 @@ class CatalogCacheTest extends MySqlIntegrationTest {
     }
 
     @Test
+    void anInFlightReadCanRefillAfterAdminEvictionUntilTheTtlExpires() throws Exception {
+        CountDownLatch oldRowLoaded = new CountDownLatch(1);
+        CountDownLatch allowRefill = new CountDownLatch(1);
+        ProductService target = AopTestUtils.getUltimateTargetObject(productService);
+        doAnswer(invocation -> {
+            Product old = (Product) invocation.callRealMethod();
+            oldRowLoaded.countDown();
+            assertThat(allowRefill.await(10, TimeUnit.SECONDS)).isTrue();
+            return old;
+        }).when(target).getProductById(LAMP);
+
+        var reader = Executors.newSingleThreadExecutor();
+        try {
+            var inFlight = reader.submit(() -> productService.getProductDetail(LAMP));
+            assertThat(oldRowLoaded.await(10, TimeUnit.SECONDS)).isTrue();
+            Category category = categoryRepository.findById(TestData.CATEGORY_ID).orElseThrow();
+            productService.updateProduct(LAMP, update("Desk Lamp", "24.50"), category);
+            assertThat(redis.hasKey(DETAIL_KEY + LAMP)).isFalse();
+
+            allowRefill.countDown();
+            assertThat(inFlight.get(10, TimeUnit.SECONDS).getName()).isEqualTo("Lamp");
+            assertThat(json.readTree(body("/product/" + LAMP)).get("name").asText()).isEqualTo("Lamp");
+            assertThat(redis.getExpire(DETAIL_KEY + LAMP)).isBetween(1L, 60L);
+            await().pollInterval(Duration.ofMillis(500)).atMost(Duration.ofSeconds(65))
+                    .until(() -> !redis.hasKey(DETAIL_KEY + LAMP));
+            assertThat(json.readTree(body("/product/" + LAMP)).get("name").asText()).isEqualTo("Desk Lamp");
+        } finally {
+            allowRefill.countDown();
+            reader.shutdownNow();
+        }
+    }
+
+    @Test
     void checkoutReservesAgainstMySqlNotTheCachedStock() throws Exception {
         assertThat(json.readTree(body("/product/" + LAMP)).get("stock").asInt()).isEqualTo(5);
         // Units sell outside the admin API, which never evicts. The cached copy keeps showing 5 until its TTL ends.
@@ -162,7 +204,8 @@ class CatalogCacheTest extends MySqlIntegrationTest {
     @Test
     void aRedisOutageFallsBackToMySqlAndRecovers() throws Exception {
         double errorsBefore = getErrors();
-        double bypassedBefore = bypassed();
+        double getsBefore = bypassed("get");
+        double putsBefore = bypassed("put");
         // A paused container keeps the TCP connection open and never answers: the worst case, a hung Redis.
         REDIS.getDockerClient().pauseContainerCmd(REDIS.getContainerId()).exec();
         try {
@@ -174,23 +217,45 @@ class CatalogCacheTest extends MySqlIntegrationTest {
                 assertThat(json.readTree(body("/product/" + DESK)).get("id").asInt()).isEqualTo(DESK);
             }
             long nextMs = (System.nanoTime() - started) / 20 / 1_000_000;
-            System.out.printf("redis hang: first request %d ms (one command timeout), then %d ms each on MySQL; "
-                    + "%.0f Redis errors, %.0f bypassed%n", firstMs, nextMs, getErrors() - errorsBefore,
-                    bypassed() - bypassedBefore);
-            // The first request pays the 100 ms command timeout, then the bypass window skips Redis entirely.
-            assertThat(firstMs).isLessThan(1_000);
-            assertThat(nextMs).isLessThan(50);
+            System.out.printf("redis hang: first request %d ms, then %d ms each on MySQL%n", firstMs, nextMs);
+            // The first request times out on get and skips put. The other 20 skip both operations.
             assertThat(getErrors() - errorsBefore).isEqualTo(1);
-            assertThat(bypassed()).isGreaterThan(bypassedBefore);
+            assertThat(bypassed("get") - getsBefore).isEqualTo(20);
+            assertThat(bypassed("put") - putsBefore).isEqualTo(21);
         } finally {
             REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
         }
 
-        Thread.sleep(400); // let the 300 ms bypass window close
-        body("/product/" + DESK);
-        assertThat(redis.hasKey(DETAIL_KEY + DESK)).isTrue();
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            body("/product/" + DESK);
+            assertThat(redis.hasKey(DETAIL_KEY + DESK)).isTrue();
+        });
         jdbc.update("UPDATE products SET name = 'Renamed in SQL' WHERE id = ?", DESK);
         assertThat(json.readTree(body("/product/" + DESK)).get("name").asText()).isEqualTo("Desk");
+    }
+
+    @Test
+    void theXCacheHeaderTellsAMissFromAHit() throws Exception {
+        assertThat(xCache("/product/" + LAMP)).isEqualTo("MISS");
+        assertThat(xCache("/product/" + LAMP)).isEqualTo("HIT");
+        assertThat(xCache("/product/" + DESK)).isEqualTo("MISS");
+
+        // A Redis error is read from MySQL, so it is a miss too.
+        REDIS.getDockerClient().pauseContainerCmd(REDIS.getContainerId()).exec();
+        try {
+            assertThat(xCache("/product/" + LAMP)).isEqualTo("MISS");
+        } finally {
+            REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
+        }
+        // Bypassed reads are misses too. Once the bypass window closes, the entry cached before the hang is a hit
+        // again, which also leaves Redis usable for the next test.
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(
+                () -> assertThat(xCache("/product/" + LAMP)).isEqualTo("HIT"));
+    }
+
+    private String xCache(String path) throws Exception {
+        return mvc.perform(get(path)).andExpect(status().isOk()).andReturn().getResponse()
+                .getHeader(CacheOutcome.HEADER);
     }
 
     private String body(String path) throws Exception {
@@ -202,8 +267,9 @@ class CatalogCacheTest extends MySqlIntegrationTest {
                 .mapToDouble(Counter::count).sum();
     }
 
-    private double bypassed() {
-        return meters.find("catalog.cache.bypassed").counters().stream().mapToDouble(Counter::count).sum();
+    private double bypassed(String operation) {
+        return meters.find("catalog.cache.bypassed").tag("operation", operation).counters().stream()
+                .mapToDouble(Counter::count).sum();
     }
 
     private static ProductUpdateDto update(String name, String price) {

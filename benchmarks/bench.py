@@ -44,6 +44,7 @@ PROJECT = os.environ.get("BENCH_PROJECT", "shopsphere-bench")
 NETWORK = f"{PROJECT}_default"
 BACKEND_PORT = os.environ.get("BENCH_BACKEND_PORT", "18080")
 K6_IMAGE = "grafana/k6:1.3.0"
+REDIS_IMAGE = "redis:7.4.2-alpine"
 MYSQL_IMAGE = "mysql:8.0.43"
 BACKEND_IMAGE = os.environ.get(
     "BENCH_BACKEND_IMAGE", "shopsphere-backend:bench" if PROJECT == "shopsphere-bench" else f"shopsphere-backend:{PROJECT}")
@@ -162,9 +163,13 @@ def host_info() -> dict:
 
 def image_ids() -> dict:
     ids = {}
-    for image in (BACKEND_IMAGE, MYSQL_IMAGE, K6_IMAGE):
+    for image in (BACKEND_IMAGE, MYSQL_IMAGE, K6_IMAGE, REDIS_IMAGE):
         out = sh(["docker", "image", "inspect", "--format", "{{.Id}}", image], capture=True, check=False)
         ids[image] = out.stdout.strip() or None
+    backend = compose("ps", "-q", "backend", capture=True).stdout.strip()
+    if backend:
+        ids[BACKEND_IMAGE] = sh(["docker", "inspect", "--format", "{{.Image}}", backend],
+                                capture=True).stdout.strip()
     return ids
 
 
@@ -227,9 +232,9 @@ def cache_snapshot() -> dict[str, dict[str, float]]:
     out = compose("exec", "-T", "backend", "curl", "--silent", "--fail",
                   "http://127.0.0.1:8081/actuator/prometheus", capture=True, check=False).stdout
     caches: dict[str, dict[str, float]] = {}
+    fields = {"catalog_cache_errors_total": "errors", "catalog_cache_bypassed_total": "bypassed"}
     for line in out.splitlines():
         match = PROM_LINE_RE.match(line)
-        fields = {"catalog_cache_errors_total": "errors", "catalog_cache_bypassed_total": "bypassed"}
         if not match or match.group(1) not in ("cache_gets_total", *fields):
             continue
         labels = dict(PROM_LABEL_RE.findall(match.group(2)))
@@ -240,18 +245,23 @@ def cache_snapshot() -> dict[str, dict[str, float]]:
                 continue
         else:
             field = fields[match.group(1)]
-        entry = caches.setdefault(name, {"hit": 0.0, "miss": 0.0, "errors": 0.0, "bypassed": 0.0})
-        entry[field] += float(match.group(3))
+        entry = caches.setdefault(name, dict.fromkeys(("hit", "miss", "errors", "bypassed", "bypassed_gets"), 0.0))
+        count = float(match.group(3))
+        entry[field] = entry.get(field, 0.0) + count
+        if field == "bypassed" and labels.get("operation") == "get":
+            entry["bypassed_gets"] = entry.get("bypassed_gets", 0.0) + count
     return caches
 
 
 def cache_delta(before: dict, after: dict, cache: str | None) -> dict | None:
     if cache is None or cache not in after:
         return None
-    prev = before.get(cache, {"hit": 0.0, "miss": 0.0, "errors": 0.0, "bypassed": 0.0})
-    hits, misses, errors, bypassed = (int(after[cache][k] - prev[k]) for k in ("hit", "miss", "errors", "bypassed"))
-    # Bypassed reads (Redis skipped after an error) are reported apart from the hit ratio.
-    return {"cache": cache, "hits": hits, "misses": misses, "redis_errors": errors, "bypassed": bypassed,
+    prev, current = before.get(cache, {}), after[cache]
+    hits, misses, errors, bypassed, bypassed_gets = (
+        int(current.get(key, 0) - prev.get(key, 0))
+        for key in ("hit", "miss", "errors", "bypassed", "bypassed_gets"))
+    return {"cache": cache, "hits": hits, "misses": misses, "redis_errors": errors,
+            "bypassed": bypassed, "bypassed_gets": bypassed_gets,
             "hit_ratio": hits / (hits + misses) if hits + misses else None}
 
 
@@ -336,6 +346,11 @@ def summarize_trial(trial: int, code: int, summary: dict, route: str, rate: floa
         "successful_rps": successes / seconds if seconds else 0.0,
         "unexpected_failure_rate": metric(summary, "unexpected_failures").get("rate", 0.0),
         "latency_ms": {k: latency.get(k) for k in ("med", "p(90)", "p(95)", "p(99)", "max")},
+        # Split by the backend's X-Cache header; null when the route or the cache-off variant sends none.
+        "latency_by_cache": {
+            outcome: ({k: values.get(k) for k in ("med", "p(90)", "p(95)", "p(99)", "max", "count")}
+                      if (values := metric(summary, f"cache_{outcome}_duration")) else None)
+            for outcome in ("hit", "miss")},
         "response_bytes_avg": metric(summary, "response_bytes").get("avg"),
         "sql": {k: sql[k] for k in ("all_statements", "all_selects", "app_table_reads", "app_rows_examined")},
         "app_sql_reads_per_success": (sql["app_table_reads"] / successes) if successes else None,
@@ -423,9 +438,9 @@ def fmt(value, digits: int = 1) -> str:
 def trial_table(results: list[dict]) -> list[str]:
     lines = [
         "| Trial | Gate | Scheduled | Delivered req/s | Successful req/s | p50 ms | p95 ms | p99 ms "
-        "| Unexpected failures | Dropped | App SQL reads / success | Cache hit % | Redis errors | Bypassed "
-        "| Avg response bytes |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Unexpected failures | Dropped | App SQL reads / success | Cache hit % | Hit p50 / p95 ms "
+        "| Miss p50 / p95 ms | Redis errors | Bypassed cache operations | Avg response bytes |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in results:
         lat = r["latency_ms"]
@@ -435,10 +450,16 @@ def trial_table(results: list[dict]) -> list[str]:
             f"| {fmt(r['delivered_rps'])} | {fmt(r['successful_rps'])} | {fmt(lat['med'])} "
             f"| {fmt(lat['p(95)'])} | {fmt(lat['p(99)'])} | {fmt(r['unexpected_failure_rate'] * 100, 2)}% "
             f"| {r['dropped_iterations']} | {fmt(r['app_sql_reads_per_success'], 2)} "
-            f"| {cache_hit_pct(r)} | {(r.get('cache') or {}).get('redis_errors', 'n/a')} "
+            f"| {cache_hit_pct(r)} | {split_latency(r, 'hit')} | {split_latency(r, 'miss')} "
+            f"| {(r.get('cache') or {}).get('redis_errors', 'n/a')} "
             f"| {(r.get('cache') or {}).get('bypassed', 'n/a')} "
             f"| {fmt(r['response_bytes_avg'], 0)} |")
     return lines
+
+
+def split_latency(result: dict, outcome: str) -> str:
+    lat = (result.get("latency_by_cache") or {}).get(outcome)
+    return "n/a" if not lat else f"{fmt(lat['med'], 2)} / {fmt(lat['p(95)'])}"
 
 
 def cache_hit_pct(result: dict) -> str:
@@ -524,7 +545,8 @@ def cmd_up(args: argparse.Namespace) -> None:
     cache = getattr(args, "cache", None) or os.environ.get("BENCH_CACHE", "none")
     os.environ["BENCH_CACHE"] = cache
     services = ["mysql", "redis", "backend"] + (["prometheus", "grafana"] if args.observability else [])
-    compose("up", "-d", "--build", "--wait", *services, observability=args.observability)
+    build_flag = "--no-build" if getattr(args, "no_build", False) else "--build"
+    compose("up", "-d", build_flag, "--wait", *services, observability=args.observability)
     log(f"stack {PROJECT}: backend on http://127.0.0.1:{BACKEND_PORT} (actuator stays on the internal port 8081), "
         f"catalog cache {backend_cache_config()['type']}")
     if cache == "redis":
@@ -677,7 +699,8 @@ def cmd_cache(args: argparse.Namespace) -> None:
         total = counts["hit"] + counts["miss"]
         ratio = f"{counts['hit'] / total * 100:.1f}%" if total else "n/a"
         log(f"{name}: {counts['hit']:.0f} hits, {counts['miss']:.0f} misses ({ratio}), "
-            f"{counts['errors']:.0f} Redis errors, {counts['bypassed']:.0f} bypassed since backend start")
+            f"{counts['errors']:.0f} Redis errors, {counts['bypassed']:.0f} bypassed cache operations "
+            f"({counts['bypassed_gets']:.0f} gets) since backend start")
     if args.action not in ("stop", "pause"):
         log(f"Redis keys: {redis_cli('DBSIZE')}")
 
@@ -880,6 +903,10 @@ def run_summary(run_dir: Path) -> dict:
     results = json.loads((run_dir / "results.json").read_text())
     med = lambda values: statistics.median(values) if values else None  # noqa: E731
     pick = lambda key: [r["latency_ms"][key] for r in results if r["latency_ms"].get(key) is not None]  # noqa: E731
+    def split(outcome: str, key: str) -> list[float]:
+        return [lat[key] for r in results
+                if (lat := (r.get("latency_by_cache") or {}).get(outcome)) and lat.get(key) is not None]
+
     reads = [r["app_sql_reads_per_success"] for r in results if r.get("app_sql_reads_per_success") is not None]
     return {
         "label": f"{manifest['scenario']} @ {manifest['rate']:g}/s ({run_dir.name})",
@@ -888,6 +915,10 @@ def run_summary(run_dir: Path) -> dict:
         "median p50 ms": med(pick("med")),
         "median p95 ms": med(pick("p(95)")),
         "median p99 ms": med(pick("p(99)")),
+        "median hit p50 ms": med(split("hit", "med")),
+        "median hit p95 ms": med(split("hit", "p(95)")),
+        "median miss p50 ms": med(split("miss", "med")),
+        "median miss p95 ms": med(split("miss", "p(95)")),
         "median delivered req/s": med([r["delivered_rps"] for r in results]),
         "median successful req/s": med([r["successful_rps"] for r in results]),
         "max unexpected failure %": max(r["unexpected_failure_rate"] for r in results) * 100,
@@ -896,7 +927,10 @@ def run_summary(run_dir: Path) -> dict:
         "median cache hit %": med([r["cache"]["hit_ratio"] * 100 for r in results
                                    if (r.get("cache") or {}).get("hit_ratio") is not None]),
         "total Redis errors": sum((r.get("cache") or {}).get("redis_errors", 0) for r in results),
-        "total bypassed reads": sum((r.get("cache") or {}).get("bypassed", 0) for r in results),
+        "total bypassed cache operations": sum((r.get("cache") or {}).get("bypassed", 0) for r in results),
+        "total bypassed gets": sum((r.get("cache") or {}).get("bypassed_gets", 0) for r in results)
+        if all("bypassed_gets" in (r.get("cache") or {}) or not (r.get("cache") or {}).get("bypassed")
+               for r in results) else None,
         "catalog cache": manifest.get("cache", {}).get("type", "none"),
         "median app rows examined / success": med([r["sql"]["app_rows_examined"] / r["successful_requests"]
                                                    for r in results if r.get("successful_requests")]),
@@ -905,11 +939,31 @@ def run_summary(run_dir: Path) -> dict:
     }
 
 
+def comparison_issues(a: dict, b: dict) -> list[str]:
+    fields = ("scenario", "rate", "pattern", "sort", "size", "warmup", "duration", "trace_seed",
+              "request_timeout", "gate", "extra_env", "limits", "flush_cache")
+    issues = [field for field in fields if a.get(field) != b.get(field)]
+    for name, path in (
+        ("fixture SQL hash", ("fixture", "sql_sha256")),
+        ("commit", ("git", "commit")),
+    ):
+        key, field = path
+        if a.get(key, {}).get(field) != b.get(key, {}).get(field):
+            issues.append(name)
+    if a.get("git", {}).get("dirty") or b.get("git", {}).get("dirty"):
+        issues.append("dirty working tree")
+    if a.get("images") != b.get("images"):
+        issues.append("container images")
+    return issues
+
+
 def cmd_compare(args: argparse.Namespace) -> None:
     dirs = [Path(d) if Path(d).is_absolute() or Path(d).exists() else RESULTS_DIR / "runs" / d for d in args.runs]
     a, b = (run_summary(d) for d in dirs)
-    if a["limits"] != b["limits"]:
-        log("WARNING: the two runs used different resource limits; the comparison is not controlled")
+    manifests = [json.loads((directory / "manifest.json").read_text()) for directory in dirs]
+    issues = comparison_issues(*manifests)
+    if issues:
+        log(f"WARNING: comparison setup differs or is unverified ({', '.join(issues)})")
     lines = [f"| Metric | A: {a['label']} | B: {b['label']} | B vs A |", "| --- | --- | --- | --- |"]
     for key in a:
         if key in ("label", "limits"):
@@ -942,6 +996,7 @@ def main() -> None:
 
     up = sub.add_parser("up", help="build and start the bench stack")
     up.add_argument("--observability", action="store_true", help="also start Prometheus and Grafana")
+    up.add_argument("--no-build", action="store_true", help="reuse the existing backend image")
     up.add_argument("--cache", choices=["none", "redis"],
                     help="catalog cache for the backend (default: $BENCH_CACHE or none); recreates the backend")
     up.set_defaults(func=cmd_up)

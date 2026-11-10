@@ -1,6 +1,7 @@
 package ecommerce.controllers;
 
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import ecommerce.catalog.CacheOutcome;
 import ecommerce.catalog.CatalogService;
 import ecommerce.common.ApiResponse;
 import ecommerce.dto.product.ProductDto;
@@ -34,12 +36,14 @@ public class ProductController {
     private final ProductService productService;
     private final CategoryService categoryService;
     private final CatalogService catalogService;
+    private final boolean cacheEnabled;
 
     public ProductController(ProductService productService, CategoryService categoryService,
-            CatalogService catalogService) {
+            CatalogService catalogService, @Value("${spring.cache.type:none}") String cacheType) {
         this.productService = productService;
         this.categoryService = categoryService;
         this.catalogService = catalogService;
+        this.cacheEnabled = "redis".equalsIgnoreCase(cacheType);
     }
 
     /** Legacy: the whole catalog in one response. Kept during the migration; new callers use /product/page. */
@@ -63,10 +67,16 @@ public class ProductController {
         return ResponseEntity.ok(catalogService.page(categoryId, sort, size, cursor));
     }
 
+    /** With the Redis cache on, {@code X-Cache: HIT|MISS} says whether the body came from Redis or MySQL. */
     @GetMapping("/{productID}")
     public ResponseEntity<ProductDto> getProduct(@PathVariable("productID") Integer productID)
             throws ProductNotExistException {
-        return new ResponseEntity<>(productService.getProductDetail(productID), HttpStatus.OK);
+        ProductDto body = productService.getProductDetail(productID);
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
+        if (cacheEnabled) {
+            response.header(CacheOutcome.HEADER, CacheOutcome.forCurrentRequest());
+        }
+        return response.body(body);
     }
 
     @PostMapping("/add")
