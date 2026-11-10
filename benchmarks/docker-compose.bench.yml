@@ -45,6 +45,26 @@ services:
     cpus: ${BENCH_REDIS_CPUS:-1}
     mem_limit: ${BENCH_REDIS_MEM:-256m}
 
+  # Sprint 3 search projection. Only started by `bench.py up --search` (profile "search"); MySQL stays the source of
+  # truth. Security is off because the port is never published outside the bench network.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.4
+    profiles: ["search"]
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      # Explicit heap: about half the container limit, the rest for Lucene's file-system cache.
+      ES_JAVA_OPTS: -Xms${BENCH_ES_HEAP:-1g} -Xmx${BENCH_ES_HEAP:-1g}
+      # A nearly full laptop disk would otherwise flip the index to read-only mid-run.
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+    cpus: ${BENCH_ES_CPUS:-2}
+    mem_limit: ${BENCH_ES_MEM:-2g}
+
   backend:
     build:
       context: ../backend
@@ -60,6 +80,12 @@ services:
       SPRING_CACHE_TYPE: ${BENCH_CACHE:-none}
       CATALOG_CACHE_TTL: ${BENCH_CACHE_TTL:-60s}
       SPRING_DATA_REDIS_HOST: redis
+      # Sprint 3: Elasticsearch engine and indexer. Set by `bench.py up --search`. The MySQL FULLTEXT engine is
+      # always available, so ?engine=mysql|elasticsearch compares both on one stack.
+      SEARCH_ELASTICSEARCH_ENABLED: ${BENCH_SEARCH:-false}
+      # Engine for requests without ?engine= (the React UI): elasticsearch with --search, else mysql.
+      SEARCH_ENGINE: ${BENCH_SEARCH_ENGINE:-mysql}
+      SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/shopsphere_bench
       SPRING_DATASOURCE_USERNAME: shopsphere
       SPRING_DATASOURCE_PASSWORD: bench

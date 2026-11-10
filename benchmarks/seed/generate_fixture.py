@@ -26,7 +26,8 @@ import random
 from pathlib import Path
 
 # v2 (Sprint 1): products carry price_cents.
-FIXTURE_VERSION = 2
+# v3 (Sprint 3): same rows as v2; the reset also clears search_index_jobs (Flyway V7).
+FIXTURE_VERSION = 3
 
 # bcrypt (cost 10) of BENCH_PASSWORD. Test-only credential for the benchmark DB.
 BENCH_PASSWORD = "bench-password-1"
@@ -171,6 +172,7 @@ def build(args: argparse.Namespace) -> tuple[str, dict]:
         "TRUNCATE TABLE cart;",
         "TRUNCATE TABLE wishlist;",
         "TRUNCATE TABLE processed_stripe_events;",
+        "TRUNCATE TABLE search_index_jobs;",
         "TRUNCATE TABLE products;",
         "TRUNCATE TABLE categories;",
         f"DELETE FROM users WHERE id >= {FIRST_USER_ID} OR email LIKE '%@bench.shopsphere.test';",
