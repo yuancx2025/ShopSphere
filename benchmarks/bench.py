@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""ShopSphere benchmark runner (Sprints 0-1). Standard library only.
+"""ShopSphere benchmark runner (Sprints 0-2). Standard library only.
 
-  python3 benchmarks/bench.py up [--observability]     build and start the bench stack
+  python3 benchmarks/bench.py up [--observability] [--cache redis]   build and start the bench stack
   python3 benchmarks/bench.py seed [--products 10000]  load the deterministic fixture
   python3 benchmarks/bench.py run detail --rate 40 --pattern hot --trials 3
   python3 benchmarks/bench.py run page --rate 40 --sort price_asc
@@ -9,6 +9,7 @@
   python3 benchmarks/bench.py burst --users 100 --stock 20 --trials 3   checkout contention + invariants
   python3 benchmarks/bench.py explain                  catalog query plans and rows examined
   python3 benchmarks/bench.py compare RUN_A RUN_B      side-by-side summary of two runs
+  python3 benchmarks/bench.py cache stats|flush|stop|start|pause|unpause   Redis cache and outages (Sprint 2)
   python3 benchmarks/bench.py smoke                    short end-to-end check (used by CI)
   python3 benchmarks/bench.py down [--volumes]
 
@@ -57,10 +58,10 @@ APP_TABLES = "products|categories|users|cart|orders|orderitems|wishlist|processe
 APP_READ_RE = re.compile(rf"^SELECT\b.*?\bFROM\s+`?({APP_TABLES})`?(\s|$)", re.IGNORECASE | re.DOTALL)
 
 SCENARIOS = {
-    "detail": {"script": "product-detail.js", "route": "product_detail", "rate": 40},
+    "detail": {"script": "product-detail.js", "route": "product_detail", "rate": 40, "cache": "productDetail"},
     "list": {"script": "product-list.js", "route": "product_list", "rate": 2},
     "cart": {"script": "checkout-skeleton.js", "route": "cart_read", "rate": 20, "tokens": True},
-    "page": {"script": "product-page.js", "route": "product_page", "rate": 40},
+    "page": {"script": "product-page.js", "route": "product_page", "rate": 40, "cache": "catalogPage"},
 }
 
 LIMIT_DEFAULTS = {
@@ -69,6 +70,8 @@ LIMIT_DEFAULTS = {
     "BENCH_MYSQL_CPUS": "2",
     "BENCH_MYSQL_MEM": "1g",
     "BENCH_K6_CPUS": "2",
+    "BENCH_REDIS_CPUS": "1",
+    "BENCH_REDIS_MEM": "256m",
 }
 
 
@@ -206,6 +209,60 @@ def digest_delta(before: dict, after: dict) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- Sprint 2: Redis cache
+
+PROM_LINE_RE = re.compile(r'^(\w+)\{(.*)\}\s+(\S+)$')
+PROM_LABEL_RE = re.compile(r'(\w+)="([^"]*)"')
+
+
+def backend_cache_config() -> dict:
+    """What the running backend was started with, read from its container rather than from this shell."""
+    out = compose("exec", "-T", "backend", "printenv", "SPRING_CACHE_TYPE", "CATALOG_CACHE_TTL",
+                  capture=True, check=False).stdout.split()
+    return {"type": out[0] if out else None, "ttl": out[1] if len(out) > 1 else None}
+
+
+def cache_snapshot() -> dict[str, dict[str, float]]:
+    """Per-cache hit, miss and Redis error counters from the backend's internal Prometheus endpoint."""
+    out = compose("exec", "-T", "backend", "curl", "--silent", "--fail",
+                  "http://127.0.0.1:8081/actuator/prometheus", capture=True, check=False).stdout
+    caches: dict[str, dict[str, float]] = {}
+    for line in out.splitlines():
+        match = PROM_LINE_RE.match(line)
+        fields = {"catalog_cache_errors_total": "errors", "catalog_cache_bypassed_total": "bypassed"}
+        if not match or match.group(1) not in ("cache_gets_total", *fields):
+            continue
+        labels = dict(PROM_LABEL_RE.findall(match.group(2)))
+        name = labels.get("cache", "?")
+        if match.group(1) == "cache_gets_total":
+            field = labels.get("result")
+            if field not in ("hit", "miss"):
+                continue
+        else:
+            field = fields[match.group(1)]
+        entry = caches.setdefault(name, {"hit": 0.0, "miss": 0.0, "errors": 0.0, "bypassed": 0.0})
+        entry[field] += float(match.group(3))
+    return caches
+
+
+def cache_delta(before: dict, after: dict, cache: str | None) -> dict | None:
+    if cache is None or cache not in after:
+        return None
+    prev = before.get(cache, {"hit": 0.0, "miss": 0.0, "errors": 0.0, "bypassed": 0.0})
+    hits, misses, errors, bypassed = (int(after[cache][k] - prev[k]) for k in ("hit", "miss", "errors", "bypassed"))
+    # Bypassed reads (Redis skipped after an error) are reported apart from the hit ratio.
+    return {"cache": cache, "hits": hits, "misses": misses, "redis_errors": errors, "bypassed": bypassed,
+            "hit_ratio": hits / (hits + misses) if hits + misses else None}
+
+
+def redis_cli(*args: str) -> str:
+    return compose("exec", "-T", "redis", "redis-cli", *args, capture=True).stdout.strip()
+
+
+def flush_cache() -> None:
+    redis_cli("FLUSHALL")
+
+
 # --------------------------------------------------------------------------- k6
 
 def k6_env(scenario: str, args: argparse.Namespace, fixture: dict, rate: float, duration: str) -> dict[str, str]:
@@ -318,6 +375,9 @@ def run_trials(scenario: str, args: argparse.Namespace, fixture: dict, rate: flo
     tokens = sign_in(fixture, fixture["carts_with_hot_sku"], out_dir / "tokens.json") if spec.get("tokens") else None
     for trial in range(1, trials + 1):
         trial_dir = out_dir / f"trial-{trial}"
+        if getattr(args, "flush_cache", False):
+            log(f"trial {trial}: flushing Redis, so the trial starts from an empty cache")
+            flush_cache()
         if duration_seconds(warmup) > 0:
             log(f"{scenario} @ {rate}/s trial {trial}/{trials}: warm-up {warmup}")
             env = k6_env(scenario, args, fixture, rate, warmup) | {
@@ -325,15 +385,18 @@ def run_trials(scenario: str, args: argparse.Namespace, fixture: dict, rate: flo
             run_k6(spec["script"], env, trial_dir, tokens)
         log(f"{scenario} @ {rate}/s trial {trial}/{trials}: measuring {duration}")
         before = digest_snapshot()
+        cache_before = cache_snapshot()
         started = utc_now()
         env = k6_env(scenario, args, fixture, rate, duration) | {"SUMMARY_FILE": "/results/summary.json"}
         code = run_k6(spec["script"], env, trial_dir, tokens)
         finished = utc_now()
         sql = digest_delta(before, digest_snapshot())
+        cache = cache_delta(cache_before, cache_snapshot(), spec.get("cache"))
         summary_path = trial_dir / "summary.json"
         summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
         result = summarize_trial(trial, code, summary, spec["route"], rate, duration, sql)
         result["measured_window"] = {"started_at": started, "finished_at": finished}
+        result["cache"] = cache
         # A sleeping laptop or paused Docker VM stretches the window and corrupts latency.
         elapsed = (dt.datetime.fromisoformat(finished.replace("Z", "+00:00"))
                    - dt.datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()
@@ -360,8 +423,9 @@ def fmt(value, digits: int = 1) -> str:
 def trial_table(results: list[dict]) -> list[str]:
     lines = [
         "| Trial | Gate | Scheduled | Delivered req/s | Successful req/s | p50 ms | p95 ms | p99 ms "
-        "| Unexpected failures | Dropped | App SQL reads / success | Avg response bytes |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Unexpected failures | Dropped | App SQL reads / success | Cache hit % | Redis errors | Bypassed "
+        "| Avg response bytes |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in results:
         lat = r["latency_ms"]
@@ -371,8 +435,15 @@ def trial_table(results: list[dict]) -> list[str]:
             f"| {fmt(r['delivered_rps'])} | {fmt(r['successful_rps'])} | {fmt(lat['med'])} "
             f"| {fmt(lat['p(95)'])} | {fmt(lat['p(99)'])} | {fmt(r['unexpected_failure_rate'] * 100, 2)}% "
             f"| {r['dropped_iterations']} | {fmt(r['app_sql_reads_per_success'], 2)} "
+            f"| {cache_hit_pct(r)} | {(r.get('cache') or {}).get('redis_errors', 'n/a')} "
+            f"| {(r.get('cache') or {}).get('bypassed', 'n/a')} "
             f"| {fmt(r['response_bytes_avg'], 0)} |")
     return lines
+
+
+def cache_hit_pct(result: dict) -> str:
+    ratio = (result.get("cache") or {}).get("hit_ratio")
+    return "n/a" if ratio is None else f"{ratio * 100:.1f}%"
 
 
 def write_run_report(out_dir: Path, manifest: dict, results: list[dict]) -> None:
@@ -392,6 +463,9 @@ def write_run_report(out_dir: Path, manifest: dict, results: list[dict]) -> None
         f"products, sha256 `{fixture['sql_sha256'][:12]}`",
         f"- Warm-up {manifest['warmup']}, measured {manifest['duration']}, trace seed {manifest['trace_seed']}, "
         f"request timeout {manifest['request_timeout']}",
+        f"- Catalog cache: {manifest['cache']['type']}"
+        + (f" (TTL {manifest['cache']['ttl']})" if manifest["cache"]["type"] == "redis" else "")
+        + ("; Redis flushed before each trial" if manifest.get("flush_cache") else ""),
         f"- Gate: p95 < {manifest['gate']['p95_ms']} ms, unexpected failures < "
         f"{manifest['gate']['max_failure_rate'] * 100:g}%, zero dropped iterations",
         f"- Limits: backend {lim['BENCH_BACKEND_CPUS']} CPU / {lim['BENCH_BACKEND_MEM']}, MySQL "
@@ -432,6 +506,8 @@ def run_manifest(scenario: str, args: argparse.Namespace, fixture: dict, rate: f
         "request_timeout": args.timeout,
         "gate": {"p95_ms": args.p95_ms, "max_failure_rate": args.max_failure_rate, "dropped_iterations": 0},
         "extra_env": getattr(args, "env", None) or [],
+        "cache": backend_cache_config(),
+        "flush_cache": getattr(args, "flush_cache", False),
         "fixture": fixture,
         "limits": limits(),
         "images": image_ids(),
@@ -445,9 +521,14 @@ def run_manifest(scenario: str, args: argparse.Namespace, fixture: dict, rate: f
 # --------------------------------------------------------------------------- commands
 
 def cmd_up(args: argparse.Namespace) -> None:
-    services = ["mysql", "backend"] + (["prometheus", "grafana"] if args.observability else [])
+    cache = getattr(args, "cache", None) or os.environ.get("BENCH_CACHE", "none")
+    os.environ["BENCH_CACHE"] = cache
+    services = ["mysql", "redis", "backend"] + (["prometheus", "grafana"] if args.observability else [])
     compose("up", "-d", "--build", "--wait", *services, observability=args.observability)
-    log(f"stack {PROJECT}: backend on http://127.0.0.1:{BACKEND_PORT} (actuator stays on the internal port 8081)")
+    log(f"stack {PROJECT}: backend on http://127.0.0.1:{BACKEND_PORT} (actuator stays on the internal port 8081), "
+        f"catalog cache {backend_cache_config()['type']}")
+    if cache == "redis":
+        flush_cache()
     if args.observability:
         log(f"Grafana on http://127.0.0.1:{os.environ.get('BENCH_GRAFANA_PORT', '3001')}, "
             f"Prometheus on http://127.0.0.1:{os.environ.get('BENCH_PROMETHEUS_PORT', '9090')}")
@@ -474,6 +555,8 @@ def cmd_seed(args: argparse.Namespace) -> None:
                 manifest["carts_with_hot_sku"], manifest["hot_sku"]["stock"]]
     if [int(c) for c in counts] != expected:
         raise SystemExit(f"fixture verification failed: got {counts}, expected {expected}")
+    # Rows changed under the cache, so drop anything cached from the previous fixture.
+    flush_cache()
     log(f"verified {counts[0]} products, {counts[1]} users, {counts[2]} carts, hot SKU stock {counts[3]}")
 
 
@@ -542,7 +625,7 @@ def cmd_ladder(args: argparse.Namespace) -> None:
 
 def cmd_smoke(args: argparse.Namespace) -> None:
     """Small end-to-end run: correct responses pass the gate, wrong ones fail it."""
-    cmd_up(argparse.Namespace(observability=False))
+    cmd_up(argparse.Namespace(observability=False, cache=None))
     cmd_seed(argparse.Namespace(seed=20261109, products=500, users=20, cart_users=20, hot_sku_stock=20))
     fixture = load_fixture_manifest()
     out_dir = RESULTS_DIR / "runs" / f"{stamp()}_smoke"
@@ -569,6 +652,34 @@ def cmd_smoke(args: argparse.Namespace) -> None:
     if failures:
         raise SystemExit(f"smoke failed: {', '.join(failures)}")
     log("smoke passed. Re-seed before real runs: python3 benchmarks/bench.py seed")
+
+
+def cmd_cache(args: argparse.Namespace) -> None:
+    """Inspect the Redis cache, or inject an outage by stopping it (the backend keeps running)."""
+    if args.action == "flush":
+        flush_cache()
+        log("Redis flushed")
+    elif args.action == "stop":
+        compose("stop", "redis")
+        log("Redis stopped; catalog reads now fall back to MySQL. Restore with: bench.py cache start")
+    elif args.action == "start":
+        compose("start", "redis")
+        compose("up", "-d", "--wait", "--no-recreate", "redis")
+        log("Redis started (empty: it keeps nothing across restarts)")
+    elif args.action == "pause":
+        compose("pause", "redis")
+        log("Redis paused: connections stay open but nothing answers (a hung Redis). Undo with: bench.py cache unpause")
+    elif args.action == "unpause":
+        compose("unpause", "redis")
+        log("Redis unpaused (its data is intact)")
+    log(f"backend cache config: {backend_cache_config()}")
+    for name, counts in sorted(cache_snapshot().items()):
+        total = counts["hit"] + counts["miss"]
+        ratio = f"{counts['hit'] / total * 100:.1f}%" if total else "n/a"
+        log(f"{name}: {counts['hit']:.0f} hits, {counts['miss']:.0f} misses ({ratio}), "
+            f"{counts['errors']:.0f} Redis errors, {counts['bypassed']:.0f} bypassed since backend start")
+    if args.action not in ("stop", "pause"):
+        log(f"Redis keys: {redis_cli('DBSIZE')}")
 
 
 # --------------------------------------------------------------------------- Sprint 1: checkout burst
@@ -782,6 +893,11 @@ def run_summary(run_dir: Path) -> dict:
         "max unexpected failure %": max(r["unexpected_failure_rate"] for r in results) * 100,
         "total dropped iterations": sum(r["dropped_iterations"] for r in results),
         "median app SQL reads / success": med(reads),
+        "median cache hit %": med([r["cache"]["hit_ratio"] * 100 for r in results
+                                   if (r.get("cache") or {}).get("hit_ratio") is not None]),
+        "total Redis errors": sum((r.get("cache") or {}).get("redis_errors", 0) for r in results),
+        "total bypassed reads": sum((r.get("cache") or {}).get("bypassed", 0) for r in results),
+        "catalog cache": manifest.get("cache", {}).get("type", "none"),
         "median app rows examined / success": med([r["sql"]["app_rows_examined"] / r["successful_requests"]
                                                    for r in results if r.get("successful_requests")]),
         "avg response bytes": med([r["response_bytes_avg"] for r in results if r.get("response_bytes_avg")]),
@@ -826,6 +942,8 @@ def main() -> None:
 
     up = sub.add_parser("up", help="build and start the bench stack")
     up.add_argument("--observability", action="store_true", help="also start Prometheus and Grafana")
+    up.add_argument("--cache", choices=["none", "redis"],
+                    help="catalog cache for the backend (default: $BENCH_CACHE or none); recreates the backend")
     up.set_defaults(func=cmd_up)
 
     down = sub.add_parser("down", help="stop the bench stack")
@@ -849,6 +967,8 @@ def main() -> None:
         p.add_argument("--sort", choices=["id", "price_asc"], default="id", help="page scenario sort")
         p.add_argument("--size", type=int, default=20, help="page scenario page size")
         p.add_argument("--env", action="append", metavar="KEY=VALUE", help="extra k6 env var")
+        p.add_argument("--flush-cache", action="store_true",
+                       help="empty Redis before each trial (with --warmup 0s this measures a cold cache)")
         add_gate_options(p)
         if name == "run":
             p.add_argument("--rate", type=float, help="offered requests/sec")
@@ -877,6 +997,10 @@ def main() -> None:
     compare.add_argument("runs", nargs=2, metavar="RUN", help="run directory or its name under results/runs")
     compare.add_argument("--out", help="also write the table to this file")
     compare.set_defaults(func=cmd_compare)
+
+    cache = sub.add_parser("cache", help="Redis cache counters, flush, or outage injection")
+    cache.add_argument("action", choices=["stats", "flush", "stop", "start", "pause", "unpause"])
+    cache.set_defaults(func=cmd_cache)
 
     smoke = sub.add_parser("smoke", help="short end-to-end check, including a negative check")
     add_gate_options(smoke)

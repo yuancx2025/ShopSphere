@@ -4,6 +4,8 @@
 
 **Time** · 1–2 weeks. **Depends on** · The paginated MySQL baseline and fixed API contract from Sprint 1.
 
+**Status** · Implemented; results and the stock-contract decision are in the [Sprint 2 report](../reports/sprint-02.md).
+
 ## What to learn
 
 - Explain cache-aside on a miss and a hit, what expiration buys you, and how cache invalidation can race with an in-flight read.
