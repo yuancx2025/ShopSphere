@@ -10,10 +10,14 @@ import org.springframework.scheduling.annotation.Scheduled;
 @EnableConfigurationProperties(SearchProperties.class)
 public class SearchConfig {
 
-    /** Runs the indexer on a timer when Elasticsearch is on and scheduling isn't turned off (tests drain by hand). */
+    /**
+     * Runs the indexer on a timer when Elasticsearch is on and scheduling isn't turned off (tests drain by hand).
+     * With Sprint 5 events on, the outbox goes to RocketMQ instead and the search consumer indexes.
+     */
     @Configuration
     @EnableScheduling
-    @ConditionalOnExpression("${search.elasticsearch.enabled:false} and ${search.indexer.schedule:true}")
+    @ConditionalOnExpression("${search.elasticsearch.enabled:false} and ${search.indexer.schedule:true}"
+            + " and !${events.enabled:false}")
     static class IndexerSchedule {
 
         private final ProductIndexer indexer;
