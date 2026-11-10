@@ -166,7 +166,8 @@ class CatalogCacheTest extends MySqlIntegrationTest {
         // A paused container keeps the TCP connection open and never answers: the worst case, a hung Redis.
         REDIS.getDockerClient().pauseContainerCmd(REDIS.getContainerId()).exec();
         try {
-            long started = System.nanoTime();
+            long pausedAt = System.nanoTime();
+            long started = pausedAt;
             assertThat(json.readTree(body("/product/" + DESK)).get("id").asInt()).isEqualTo(DESK);
             long firstMs = (System.nanoTime() - started) / 1_000_000;
             started = System.nanoTime();
@@ -180,7 +181,10 @@ class CatalogCacheTest extends MySqlIntegrationTest {
             // The first request pays the 100 ms command timeout, then the bypass window skips Redis entirely.
             assertThat(firstMs).isLessThan(1_000);
             assertThat(nextMs).isLessThan(50);
-            assertThat(getErrors() - errorsBefore).isEqualTo(1);
+            // At most one probe of the hung Redis per 300 ms bypass window, not one per request. On a busy host the
+            // 21 requests can outlast a window, so the count is bounded by elapsed windows rather than fixed at 1.
+            long windows = 1 + (System.nanoTime() - pausedAt) / 300_000_000L;
+            assertThat(getErrors() - errorsBefore).isBetween(1.0, (double) windows);
             assertThat(bypassed()).isGreaterThan(bypassedBefore);
         } finally {
             REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
