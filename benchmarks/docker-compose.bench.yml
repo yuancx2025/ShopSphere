@@ -122,7 +122,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
+    environment: &backend-env
       SPRING_PROFILES_ACTIVE: bench
       # A/B switch: none (every read goes to MySQL) or redis (cache-aside). Set by `bench.py up --cache`.
       SPRING_CACHE_TYPE: ${BENCH_CACHE:-none}
@@ -138,6 +138,9 @@ services:
       # which starts the broker and creates the topic before the backend.
       EVENTS_ENABLED: ${BENCH_EVENTS:-false}
       EVENTS_NAMESRV: rocketmq-namesrv:9876
+      # With --events the consumer groups run in the worker service below; this backend only writes and
+      # publishes the outbox.
+      EVENTS_CONSUMER_ENABLED: ${BENCH_BACKEND_CONSUMERS:-true}
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/shopsphere_bench
       SPRING_DATASOURCE_USERNAME: shopsphere
       SPRING_DATASOURCE_PASSWORD: bench
@@ -157,6 +160,29 @@ services:
       start_period: 20s
     cpus: ${BENCH_BACKEND_CPUS:-2}
     mem_limit: ${BENCH_BACKEND_MEM:-1536m}
+
+  # Sprint 5: the same image running only the two ProductChanged consumer groups (no publisher, no port), so a
+  # worker can be stopped or killed while the backend keeps accepting admin edits. Started by `bench.py up --events`.
+  worker:
+    image: ${BENCH_BACKEND_IMAGE:-shopsphere-backend:bench}
+    profiles: ["events"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+      EVENTS_ENABLED: "true"
+      EVENTS_PUBLISHER_ENABLED: "false"
+      EVENTS_CONSUMER_ENABLED: "true"
+      EVENTS_CONSUMER_MAX_RECONSUME_TIMES: ${BENCH_MAX_RECONSUME:-5}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+    cpus: ${BENCH_WORKER_CPUS:-1}
+    mem_limit: ${BENCH_WORKER_MEM:-1g}
 
   prometheus:
     image: prom/prometheus:v3.5.0
