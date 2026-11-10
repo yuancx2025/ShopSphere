@@ -9,6 +9,7 @@ import './Navbar.css';
 
 const Navbar: React.FC = () => {
   const [token, setToken] = useState<string | null>(null);
+  const [searchText, setSearchText] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -44,6 +45,14 @@ const Navbar: React.FC = () => {
     });
   };
 
+  const submitSearch = (event: React.FormEvent) => {
+    event.preventDefault();
+    const q = searchText.trim();
+    if (q) {
+      navigate(`/search?q=${encodeURIComponent(q)}`);
+    }
+  };
+
   return (
     <nav className="navbar navbar-expand-lg navbar-dark bg-dark">
       <Link className="navbar-brand" to="/">
@@ -63,7 +72,7 @@ const Navbar: React.FC = () => {
       </button>
 
       <div className="collapse navbar-collapse" id="navbarSupportedContent">
-        <form className="form-inline ml-auto mr-auto">
+        <form className="form-inline ml-auto mr-auto" role="search" onSubmit={submitSearch}>
           <div className="input-group">
             <input
               size={100}
@@ -71,9 +80,12 @@ const Navbar: React.FC = () => {
               className="form-control"
               placeholder="Search Items"
               aria-label="search"
+              maxLength={200}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
             />
             <div className="input-group-prepend">
-              <span className="input-group-text" id="search-button-navbar">
+              <button type="submit" className="input-group-text" id="search-button-navbar" aria-label="Search">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   width="16"
@@ -84,7 +96,7 @@ const Navbar: React.FC = () => {
                 >
                   <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
                 </svg>
-              </span>
+              </button>
             </div>
           </div>
         </form>

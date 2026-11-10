@@ -21,7 +21,7 @@ public final class TestData {
     public TestData reset() {
         jdbc.execute("SET FOREIGN_KEY_CHECKS = 0");
         for (String table : new String[] {"orderitems", "orders", "cart", "wishlist", "processed_stripe_events",
-                "products", "categories"}) {
+                "search_index_jobs", "products", "categories"}) {
             jdbc.execute("TRUNCATE TABLE " + table);
         }
         jdbc.update("DELETE FROM users WHERE email LIKE '%@it.shopsphere.test'");
@@ -40,11 +40,15 @@ public final class TestData {
     }
 
     public void product(int id, int categoryId, String name, String price, int stock) {
+        product(id, categoryId, name, "Test product " + id, price, stock);
+    }
+
+    public void product(int id, int categoryId, String name, String description, String price, int stock) {
         BigDecimal dollars = new BigDecimal(price);
         jdbc.update("INSERT INTO products (id, name, image_url, price, price_cents, description, category_id, stock) "
                         + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 id, name, "https://images.shopsphere.test/p" + id + ".jpg", dollars.doubleValue(),
-                dollars.movePointRight(2).longValueExact(), "Test product " + id, categoryId, stock);
+                dollars.movePointRight(2).longValueExact(), description, categoryId, stock);
     }
 
     /** Creates users with ids firstId..firstId+count-1. */

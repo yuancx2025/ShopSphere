@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """ShopSphere benchmark runner (Sprints 0-2). Standard library only.
 
-  python3 benchmarks/bench.py up [--observability] [--cache redis]   build and start the bench stack
+  python3 benchmarks/bench.py up [--observability] [--cache redis] [--search]   build and start the bench stack
   python3 benchmarks/bench.py seed [--products 10000]  load the deterministic fixture
   python3 benchmarks/bench.py run detail --rate 40 --pattern hot --trials 3
   python3 benchmarks/bench.py run page --rate 40 --sort price_asc
+  python3 benchmarks/bench.py run search --rate 40 --engine elasticsearch   (after seed-wands)
   python3 benchmarks/bench.py ladder detail --rates 40,200,500,1000,2000
   python3 benchmarks/bench.py burst --users 100 --stock 20 --trials 3   checkout contention + invariants
   python3 benchmarks/bench.py explain                  catalog query plans and rows examined
@@ -33,6 +34,7 @@ import shlex
 import statistics
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -53,6 +55,9 @@ MYSQL_ROOT_PASSWORD = "bench-root"
 RESULTS_DIR = BENCH_DIR / "results"
 FIXTURE_DIR = RESULTS_DIR / "fixture"
 GENERATOR = BENCH_DIR / "seed" / "generate_fixture.py"
+WANDS_LOADER = BENCH_DIR / "seed" / "load_wands.py"
+WANDS_DIR = RESULTS_DIR / "wands"
+WANDS_URL = "https://raw.githubusercontent.com/wayfair/WANDS/main/dataset"
 
 APP_TABLES = "products|categories|users|cart|orders|orderitems|wishlist|processed_stripe_events"
 APP_READ_RE = re.compile(rf"^SELECT\b.*?\bFROM\s+`?({APP_TABLES})`?(\s|$)", re.IGNORECASE | re.DOTALL)
@@ -62,6 +67,7 @@ SCENARIOS = {
     "list": {"script": "product-list.js", "route": "product_list", "rate": 2},
     "cart": {"script": "checkout-skeleton.js", "route": "cart_read", "rate": 20, "tokens": True},
     "page": {"script": "product-page.js", "route": "product_page", "rate": 40, "cache": "catalogPage"},
+    "search": {"script": "product-search.js", "route": "product_search", "rate": 40, "queries": True},
 }
 
 LIMIT_DEFAULTS = {
@@ -72,7 +78,13 @@ LIMIT_DEFAULTS = {
     "BENCH_K6_CPUS": "2",
     "BENCH_REDIS_CPUS": "1",
     "BENCH_REDIS_MEM": "256m",
+    "BENCH_ES_CPUS": "2",
+    "BENCH_ES_MEM": "2g",
+    "BENCH_ES_HEAP": "1g",
 }
+# Test-only admin from Flyway V2, used to trigger the search index rebuild after seeding.
+ADMIN_EMAIL = "admin@shopsphere.com"
+ADMIN_PASSWORD = "admin123"
 
 
 # --------------------------------------------------------------------------- helpers
@@ -81,13 +93,19 @@ def log(message: str) -> None:
     print(f"[bench] {message}", flush=True)
 
 
-def sh(cmd: list[str], *, check: bool = True, capture: bool = False, stdin=None) -> subprocess.CompletedProcess:
+def sh(cmd: list[str], *, check: bool = True, capture: bool = False, stdin=None,
+       input_text: str | None = None) -> subprocess.CompletedProcess:
+    if input_text is not None:
+        return subprocess.run(cmd, check=check, text=True, input=input_text,
+                              stdout=subprocess.PIPE if capture else None)
     return subprocess.run(cmd, check=check, text=True, stdin=stdin,
                           stdout=subprocess.PIPE if capture else None)
 
 
 def compose(*args: str, observability: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    cmd = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE)]
+    # The search profile is always on: `up` names its services explicitly, so Elasticsearch only starts with
+    # --search, while exec/down can still reach it.
+    cmd = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), "--profile", "search"]
     if observability:
         cmd += ["--profile", "observability"]
     return sh(cmd + list(args), **kwargs)
@@ -263,6 +281,138 @@ def flush_cache() -> None:
     redis_cli("FLUSHALL")
 
 
+# --------------------------------------------------------------------------- Sprint 3: search
+
+def backend_search_enabled() -> bool:
+    out = compose("exec", "-T", "backend", "printenv", "SEARCH_ELASTICSEARCH_ENABLED",
+                  capture=True, check=False).stdout.strip()
+    return out == "true"
+
+
+def es_get(path: str) -> dict:
+    out = compose("exec", "-T", "elasticsearch", "curl", "--silent", "--fail", f"http://127.0.0.1:9200{path}",
+                  capture=True).stdout
+    return json.loads(out)
+
+
+def admin_token() -> str:
+    body = json.dumps({"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}).encode()
+    request = urllib.request.Request(f"http://127.0.0.1:{BACKEND_PORT}/user/signIn", data=body,
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read())["token"]
+
+
+def rebuild_search_index(expected: int, timeout_s: float = 600) -> None:
+    """Recreates the index through the backend, waits for the backfill, and checks every product is indexed."""
+    request = urllib.request.Request(f"http://127.0.0.1:{BACKEND_PORT}/product/search/rebuild", data=b"",
+                                     method="POST", headers={"Authorization": f"Bearer {admin_token()}"})
+    started = time.monotonic()
+    with urllib.request.urlopen(request, timeout=60) as response:
+        queued = json.loads(response.read())["queued"]
+    log(f"search rebuild: {queued} index jobs queued")
+    while True:
+        pending = int(mysql("SELECT COUNT(*) FROM search_index_jobs", database=DATABASE)[0][0])
+        if pending == 0:
+            break
+        if time.monotonic() - started > timeout_s:
+            raise SystemExit(f"search backfill still has {pending} jobs after {timeout_s:.0f}s")
+        time.sleep(0.5)
+    elapsed = time.monotonic() - started
+    es_get("/products/_refresh")
+    indexed = es_get("/products/_count")["count"]
+    if indexed != expected:
+        raise SystemExit(f"search index has {indexed} documents, expected {expected}")
+    log(f"search backfill: {indexed} documents in {elapsed:.1f}s ({indexed / elapsed:.0f} docs/s)")
+
+
+def http_json(method: str, path: str, body: dict | None = None, token: str | None = None) -> dict:
+    headers = {"Content-Type": "application/json"} | ({"Authorization": f"Bearer {token}"} if token else {})
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(f"http://127.0.0.1:{BACKEND_PORT}{path}", data=data, method=method,
+                                     headers=headers)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read())
+
+
+def rename_product(product_id: int, name: str, token: str) -> None:
+    current = http_json("GET", f"/product/{product_id}")
+    http_json("POST", f"/product/update/{product_id}", {
+        "name": name, "imageURL": current["imageURL"], "price": current["price"],
+        "description": current["description"], "categoryId": current["categoryId"]}, token)
+
+
+def visible(product_id: int, marker: str) -> bool:
+    page = http_json("GET", f"/product/search?q={marker}&engine=elasticsearch&size=5")
+    return any(item["id"] == product_id for item in page["items"])
+
+
+def wait_visible(product_id: int, marker: str, interval_s: float, timeout_s: float = 60) -> float:
+    started = time.monotonic()
+    while not visible(product_id, marker):
+        if time.monotonic() - started > timeout_s:
+            raise SystemExit(f"product {product_id} not searchable as {marker!r} after {timeout_s:.0f}s")
+        time.sleep(interval_s)
+    return time.monotonic() - started
+
+
+def percentile(values: list[float], p: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, round(p * len(ordered)) - 1))]
+
+
+def cmd_search_lag(args: argparse.Namespace) -> None:
+    """Write-to-search visibility: admin rename, then poll search until the new name finds the product."""
+    if not backend_search_enabled():
+        raise SystemExit("Elasticsearch is off; run `bench.py up --search` first")
+    token = admin_token()
+    # The admin update requires a description, and some WANDS products have none.
+    editable = [int(r[0]) for r in mysql("SELECT id FROM products WHERE description <> '' ORDER BY id",
+                                         database=DATABASE)]
+    total = len(editable)
+    run_tag = stamp().lower().replace("t", "").replace("z", "")
+    ids = [editable[(n * 7919) % total] for n in range(args.samples)]  # spread over the catalog, deterministic
+    originals = {pid: http_json("GET", f"/product/{pid}")["name"] for pid in ids}
+    result: dict = {"samples": args.samples, "probe_interval_ms": args.interval_ms, "started_at": utc_now(),
+                    "products": total, "git": git_info()}
+    try:
+        lags = []
+        for n, pid in enumerate(ids):
+            marker = f"lagprobe{run_tag}n{n}"
+            rename_product(pid, f"{originals[pid]} {marker}", token)  # returns after the commit
+            lags.append(wait_visible(pid, marker, args.interval_ms / 1000))
+            time.sleep(args.pause_ms / 1000)
+        result["healthy_seconds"] = {"p50": percentile(lags, 0.5), "p95": percentile(lags, 0.95), "max": max(lags),
+                                     "all": lags}
+        log(f"healthy: {len(lags)} edits, visibility p50 {percentile(lags, 0.5):.2f}s, "
+            f"p95 {percentile(lags, 0.95):.2f}s, max {max(lags):.2f}s (probe every {args.interval_ms} ms)")
+        if args.outage:
+            log(f"outage: pausing Elasticsearch, renaming {len(ids)} products, resuming after {args.outage}s")
+            compose("pause", "elasticsearch", capture=True)
+            try:
+                for n, pid in enumerate(ids):
+                    rename_product(pid, f"{originals[pid]} outage{run_tag}n{n}", token)
+                time.sleep(args.outage)
+                pending = int(mysql("SELECT COUNT(*) FROM search_index_jobs", database=DATABASE)[0][0])
+            finally:
+                compose("unpause", "elasticsearch", capture=True)
+            resumed = time.monotonic()
+            for n, pid in enumerate(ids):
+                wait_visible(pid, f"outage{run_tag}n{n}", args.interval_ms / 1000, timeout_s=120)
+            catch_up = time.monotonic() - resumed
+            result["outage"] = {"seconds": args.outage, "edits": len(ids), "jobs_queued_at_resume": pending,
+                                "catch_up_seconds": catch_up}
+            log(f"outage: {pending} jobs queued during {args.outage}s; all {len(ids)} edits searchable "
+                f"{catch_up:.2f}s after Elasticsearch resumed")
+    finally:
+        for pid, name in originals.items():
+            rename_product(pid, name, token)
+    out = RESULTS_DIR / "search-lag" / f"{stamp()}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2) + "\n")
+    log(f"results: {out.relative_to(REPO_DIR)}")
+
+
 # --------------------------------------------------------------------------- k6
 
 def k6_env(scenario: str, args: argparse.Namespace, fixture: dict, rate: float, duration: str) -> dict[str, str]:
@@ -274,27 +424,42 @@ def k6_env(scenario: str, args: argparse.Namespace, fixture: dict, rate: float, 
         "GATE_P95_MS": str(args.p95_ms),
         "GATE_MAX_FAILURE_RATE": str(args.max_failure_rate),
         "TRACE_SEED": str(args.trace_seed),
-        "PRODUCT_COUNT": str(fixture["catalog_products"]),
         "TOTAL_PRODUCTS": str(fixture["total_products"]),
-        "HOT_SKU_ID": str(fixture["hot_sku"]["id"]),
-        "CART_USERS": str(fixture["carts_with_hot_sku"]),
-        "FIRST_USER_ID": str(fixture["users"]["first_id"]),
-        "BENCH_PASSWORD": fixture["users"]["password"],
         "K6_NO_USAGE_REPORT": "true",
     }
+    if fixture.get("dataset", "synthetic") == "synthetic":
+        env |= {
+            "PRODUCT_COUNT": str(fixture["catalog_products"]),
+            "HOT_SKU_ID": str(fixture["hot_sku"]["id"]),
+            "CART_USERS": str(fixture["carts_with_hot_sku"]),
+            "FIRST_USER_ID": str(fixture["users"]["first_id"]),
+            "BENCH_PASSWORD": fixture["users"]["password"],
+        }
     if scenario == "detail":
         env["PATTERN"] = args.pattern
     if scenario == "page":
         env["SORT"] = args.sort
         env["SIZE"] = str(args.size)
         env["CATEGORIES"] = str(fixture["categories"])
+    if scenario == "search":
+        env["ENGINE"] = args.engine
+        env["SIZE"] = str(args.size)
     for item in getattr(args, "env", None) or []:
         key, _, value = item.partition("=")
         env[key] = value
     return env
 
 
-def run_k6(script: str, env: dict[str, str], results_dir: Path, tokens: Path | None = None) -> int:
+def search_query_trace() -> Path:
+    """The WANDS query strings (both splits; this is a latency trace, not a relevance score) for k6."""
+    path = WANDS_DIR / "k6-queries.json"
+    queries = json.loads((WANDS_DIR / "queries.json").read_text())
+    path.write_text(json.dumps([q["query"] for q in sorted(queries, key=lambda q: q["query_id"])]))
+    return path
+
+
+def run_k6(script: str, env: dict[str, str], results_dir: Path, tokens: Path | None = None,
+           queries: Path | None = None) -> int:
     results_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "docker", "run", "--rm", "--network", NETWORK,
@@ -305,6 +470,8 @@ def run_k6(script: str, env: dict[str, str], results_dir: Path, tokens: Path | N
     ]
     if tokens is not None:
         cmd += ["-v", f"{tokens}:/tokens.json:ro"]
+    if queries is not None:
+        cmd += ["-v", f"{queries}:/queries.json:ro"]
     for key, value in env.items():
         cmd += ["-e", f"{key}={value}"]
     cmd += [K6_IMAGE, "run", "--quiet", f"/scripts/{script}"]
@@ -373,6 +540,7 @@ def run_trials(scenario: str, args: argparse.Namespace, fixture: dict, rate: flo
     spec = SCENARIOS[scenario]
     results = []
     tokens = sign_in(fixture, fixture["carts_with_hot_sku"], out_dir / "tokens.json") if spec.get("tokens") else None
+    queries = search_query_trace() if spec.get("queries") else None
     for trial in range(1, trials + 1):
         trial_dir = out_dir / f"trial-{trial}"
         if getattr(args, "flush_cache", False):
@@ -382,13 +550,13 @@ def run_trials(scenario: str, args: argparse.Namespace, fixture: dict, rate: flo
             log(f"{scenario} @ {rate}/s trial {trial}/{trials}: warm-up {warmup}")
             env = k6_env(scenario, args, fixture, rate, warmup) | {
                 "WARMUP": "1", "SUMMARY_FILE": "/results/warmup-summary.json"}
-            run_k6(spec["script"], env, trial_dir, tokens)
+            run_k6(spec["script"], env, trial_dir, tokens, queries)
         log(f"{scenario} @ {rate}/s trial {trial}/{trials}: measuring {duration}")
         before = digest_snapshot()
         cache_before = cache_snapshot()
         started = utc_now()
         env = k6_env(scenario, args, fixture, rate, duration) | {"SUMMARY_FILE": "/results/summary.json"}
-        code = run_k6(spec["script"], env, trial_dir, tokens)
+        code = run_k6(spec["script"], env, trial_dir, tokens, queries)
         finished = utc_now()
         sql = digest_delta(before, digest_snapshot())
         cache = cache_delta(cache_before, cache_snapshot(), spec.get("cache"))
@@ -459,8 +627,11 @@ def write_run_report(out_dir: Path, manifest: dict, results: list[dict]) -> None
         "",
         f"- Commit `{manifest['git']['commit'][:12]}` on `{manifest['git']['branch']}`"
         + (" with uncommitted changes" if manifest["git"]["dirty"] else ""),
-        f"- Fixture v{fixture['fixture_version']}, seed {fixture['seed']}, {fixture['catalog_products']} catalog "
-        f"products, sha256 `{fixture['sql_sha256'][:12]}`",
+        (f"- WANDS fixture v{fixture['fixture_version']}, {fixture['total_products']} products, "
+         f"sha256 `{fixture['sql_sha256'][:12]}`; engine {manifest.get('engine')}"
+         if fixture.get("dataset") == "wands" else
+         f"- Fixture v{fixture['fixture_version']}, seed {fixture['seed']}, {fixture['catalog_products']} catalog "
+         f"products, sha256 `{fixture['sql_sha256'][:12]}`"),
         f"- Warm-up {manifest['warmup']}, measured {manifest['duration']}, trace seed {manifest['trace_seed']}, "
         f"request timeout {manifest['request_timeout']}",
         f"- Catalog cache: {manifest['cache']['type']}"
@@ -498,7 +669,8 @@ def run_manifest(scenario: str, args: argparse.Namespace, fixture: dict, rate: f
         "rate": rate,
         "pattern": args.pattern if scenario == "detail" else None,
         "sort": args.sort if scenario == "page" else None,
-        "size": args.size if scenario == "page" else None,
+        "size": args.size if scenario in ("page", "search") else None,
+        "engine": args.engine if scenario == "search" else None,
         "trials": trials,
         "warmup": warmup,
         "duration": duration,
@@ -523,10 +695,14 @@ def run_manifest(scenario: str, args: argparse.Namespace, fixture: dict, rate: f
 def cmd_up(args: argparse.Namespace) -> None:
     cache = getattr(args, "cache", None) or os.environ.get("BENCH_CACHE", "none")
     os.environ["BENCH_CACHE"] = cache
-    services = ["mysql", "redis", "backend"] + (["prometheus", "grafana"] if args.observability else [])
+    search = bool(getattr(args, "search", False)) or os.environ.get("BENCH_SEARCH", "false") == "true"
+    os.environ["BENCH_SEARCH"] = "true" if search else "false"
+    os.environ["BENCH_SEARCH_ENGINE"] = "elasticsearch" if search else "mysql"
+    services = (["mysql", "redis"] + (["elasticsearch"] if search else []) + ["backend"]
+                + (["prometheus", "grafana"] if args.observability else []))
     compose("up", "-d", "--build", "--wait", *services, observability=args.observability)
     log(f"stack {PROJECT}: backend on http://127.0.0.1:{BACKEND_PORT} (actuator stays on the internal port 8081), "
-        f"catalog cache {backend_cache_config()['type']}")
+        f"catalog cache {backend_cache_config()['type']}, Elasticsearch {'on' if search else 'off'}")
     if cache == "redis":
         flush_cache()
     if args.observability:
@@ -558,13 +734,52 @@ def cmd_seed(args: argparse.Namespace) -> None:
     # Rows changed under the cache, so drop anything cached from the previous fixture.
     flush_cache()
     log(f"verified {counts[0]} products, {counts[1]} users, {counts[2]} carts, hot SKU stock {counts[3]}")
+    if backend_search_enabled():
+        rebuild_search_index(manifest["total_products"])
+
+
+def cmd_seed_wands(args: argparse.Namespace) -> None:
+    """Loads the WANDS catalog (Sprint 3 relevance and search load runs) instead of the synthetic fixture."""
+    raw = WANDS_DIR / "raw"
+    missing = [f for f in ("product.csv", "query.csv", "label.csv") if not (raw / f).exists()]
+    if missing:
+        raise SystemExit(f"missing {', '.join(missing)} in {raw.relative_to(REPO_DIR)}; download them with\n  "
+                         + "\n  ".join(f"curl -fL -o {raw.relative_to(REPO_DIR)}/{f} {WANDS_URL}/{f}" for f in missing))
+    sh([sys.executable, "-I", str(WANDS_LOADER), "--raw-dir", str(raw), "--out-dir", str(WANDS_DIR),
+        "--split-seed", str(args.split_seed)])
+    manifest = json.loads((WANDS_DIR / "manifest.json").read_text())
+    log(f"loading WANDS into {DATABASE}")
+    with open(WANDS_DIR / "wands.sql") as sql:
+        compose("exec", "-T", "-e", f"MYSQL_PWD={MYSQL_ROOT_PASSWORD}", "mysql",
+                "mysql", "-uroot", "--default-character-set=utf8mb4", DATABASE, stdin=sql, capture=True)
+    count = int(mysql("SELECT COUNT(*) FROM products", database=DATABASE)[0][0])
+    if count != manifest["total_products"]:
+        raise SystemExit(f"WANDS verification failed: {count} products, expected {manifest['total_products']}")
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    (FIXTURE_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    flush_cache()
+    log(f"verified {count} WANDS products in {manifest['categories']} categories")
+    if backend_search_enabled():
+        rebuild_search_index(count)
+    else:
+        log("Elasticsearch is off; run `up --search` and `seed-wands` again to index the catalog")
+
+
+def check_dataset(scenario: str, fixture: dict) -> None:
+    """The search scenario needs the WANDS catalog (real queries); the others need the synthetic fixture."""
+    dataset = fixture.get("dataset", "synthetic")
+    if (scenario == "search") != (dataset == "wands"):
+        raise SystemExit(f"scenario {scenario} does not run on the {dataset} fixture; "
+                         + ("run `bench.py seed-wands`" if scenario == "search" else "run `bench.py seed`"))
 
 
 def cmd_run(args: argparse.Namespace) -> None:
     fixture = load_fixture_manifest()
+    check_dataset(args.scenario, fixture)
     rate = args.rate if args.rate is not None else SCENARIOS[args.scenario]["rate"]
     label = (f"{args.scenario}_{rate:g}rps" + (f"_{args.pattern}" if args.scenario == "detail" else "")
-             + (f"_{args.sort}" if args.scenario == "page" else ""))
+             + (f"_{args.sort}" if args.scenario == "page" else "")
+             + (f"_{args.engine}" if args.scenario == "search" else ""))
     out_dir = RESULTS_DIR / "runs" / f"{stamp()}_{label}"
     manifest = run_manifest(args.scenario, args, fixture, rate, args.trials, args.warmup, args.duration)
     results = run_trials(args.scenario, args, fixture, rate, out_dir, args.trials, args.warmup, args.duration)
@@ -580,8 +795,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_ladder(args: argparse.Namespace) -> None:
     fixture = load_fixture_manifest()
+    check_dataset(args.scenario, fixture)
     rates = [float(r) for r in args.rates.split(",")]
-    label = f"ladder_{args.scenario}" + (f"_{args.pattern}" if args.scenario == "detail" else "")
+    label = (f"ladder_{args.scenario}" + (f"_{args.pattern}" if args.scenario == "detail" else "")
+             + (f"_{args.engine}" if args.scenario == "search" else ""))
     out_dir = RESULTS_DIR / "runs" / f"{stamp()}_{label}"
     manifest = run_manifest(args.scenario, args, fixture, rates[0], 1, args.warmup, args.duration)
     manifest["rates"] = rates
@@ -944,6 +1161,8 @@ def main() -> None:
     up.add_argument("--observability", action="store_true", help="also start Prometheus and Grafana")
     up.add_argument("--cache", choices=["none", "redis"],
                     help="catalog cache for the backend (default: $BENCH_CACHE or none); recreates the backend")
+    up.add_argument("--search", action="store_true",
+                    help="also start Elasticsearch and enable the search engine and indexer (default: $BENCH_SEARCH)")
     up.set_defaults(func=cmd_up)
 
     down = sub.add_parser("down", help="stop the bench stack")
@@ -958,6 +1177,19 @@ def main() -> None:
     seed.add_argument("--hot-sku-stock", type=int, default=20)
     seed.set_defaults(func=cmd_seed)
 
+    seed_wands = sub.add_parser("seed-wands", help="load the WANDS catalog for search relevance and load runs")
+    seed_wands.add_argument("--split-seed", type=int, default=20261109,
+                            help="seed for the tuning/held-out query split; fix it before looking at results")
+    seed_wands.set_defaults(func=cmd_seed_wands)
+
+    lag = sub.add_parser("search-lag", help="time from an admin edit to the first search response that reflects it")
+    lag.add_argument("--samples", type=int, default=50, help="edits to time, one at a time")
+    lag.add_argument("--interval-ms", type=int, default=50, help="search probe interval")
+    lag.add_argument("--pause-ms", type=int, default=200, help="gap between samples")
+    lag.add_argument("--outage", type=float, default=0,
+                     help="also pause Elasticsearch for this many seconds while editing, and time the catch-up")
+    lag.set_defaults(func=cmd_search_lag)
+
     for name, func, help_text in (("run", cmd_run, "warm-up plus measured trials at one rate"),
                                   ("ladder", cmd_ladder, "step the rate until the gate fails")):
         p = sub.add_parser(name, help=help_text)
@@ -965,7 +1197,9 @@ def main() -> None:
         p.add_argument("--pattern", choices=["uniform", "hot"], default="uniform",
                        help="detail access pattern (hot = 80%% of reads on 20%% of products)")
         p.add_argument("--sort", choices=["id", "price_asc"], default="id", help="page scenario sort")
-        p.add_argument("--size", type=int, default=20, help="page scenario page size")
+        p.add_argument("--size", type=int, default=20, help="page and search scenario page size")
+        p.add_argument("--engine", choices=["mysql", "elasticsearch"], default="elasticsearch",
+                       help="search scenario engine")
         p.add_argument("--env", action="append", metavar="KEY=VALUE", help="extra k6 env var")
         p.add_argument("--flush-cache", action="store_true",
                        help="empty Redis before each trial (with --warmup 0s this measures a cold cache)")

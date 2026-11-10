@@ -21,10 +21,17 @@ import ecommerce.dto.product.StockAdjustmentDto;
 import ecommerce.dto.product.StockAdjustmentResponseDto;
 import ecommerce.exceptions.ProductNotExistException;
 import ecommerce.model.Category;
+import ecommerce.search.ProductIndexer;
+import ecommerce.search.ProductSearchService;
+import ecommerce.search.SearchPageDto;
+import ecommerce.search.SearchQuery;
 import ecommerce.service.CategoryService;
 import ecommerce.service.ProductService;
 import jakarta.validation.Valid;
+import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @RestController
@@ -34,12 +41,16 @@ public class ProductController {
     private final ProductService productService;
     private final CategoryService categoryService;
     private final CatalogService catalogService;
+    private final ProductSearchService searchService;
+    private final Optional<ProductIndexer> indexer;
 
     public ProductController(ProductService productService, CategoryService categoryService,
-            CatalogService catalogService) {
+            CatalogService catalogService, ProductSearchService searchService, Optional<ProductIndexer> indexer) {
         this.productService = productService;
         this.categoryService = categoryService;
         this.catalogService = catalogService;
+        this.searchService = searchService;
+        this.indexer = indexer;
     }
 
     /** Legacy: the whole catalog in one response. Kept during the migration; new callers use /product/page. */
@@ -61,6 +72,39 @@ public class ProductController {
             @RequestParam(value = "size", required = false) Integer size,
             @RequestParam(value = "cursor", required = false) String cursor) {
         return ResponseEntity.ok(catalogService.page(categoryId, sort, size, cursor));
+    }
+
+    /**
+     * Keyword search with optional category and price filters (prices in dollars, inclusive). {@code sort} is
+     * {@code relevance} (default), {@code price_asc} or {@code price_desc}; {@code size} is 1–100 (default 20) and
+     * results stop at 1,000. {@code engine} picks {@code mysql} (FULLTEXT baseline) or {@code elasticsearch};
+     * without it, {@code search.engine} decides.
+     */
+    @GetMapping("/search")
+    public ResponseEntity<SearchPageDto> search(
+            @RequestParam(value = "q", required = false) String q,
+            @RequestParam(value = "categoryId", required = false) Integer categoryId,
+            @RequestParam(value = "minPrice", required = false) BigDecimal minPrice,
+            @RequestParam(value = "maxPrice", required = false) BigDecimal maxPrice,
+            @RequestParam(value = "sort", required = false) String sort,
+            @RequestParam(value = "page", required = false) Integer page,
+            @RequestParam(value = "size", required = false) Integer size,
+            @RequestParam(value = "engine", required = false) String engine) {
+        SearchQuery query = SearchQuery.of(q, categoryId, minPrice, maxPrice, sort, page, size);
+        return ResponseEntity.ok(searchService.search(query, engine));
+    }
+
+    /**
+     * Recreates the Elasticsearch index and queues every product for the indexer. Returns 409 when Elasticsearch
+     * is not enabled.
+     */
+    @PostMapping("/search/rebuild")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Map<String, Object>> rebuildSearchIndex() throws IOException {
+        if (indexer.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", "Elasticsearch is not enabled"));
+        }
+        return ResponseEntity.accepted().body(Map.of("queued", indexer.get().rebuild()));
     }
 
     @GetMapping("/{productID}")

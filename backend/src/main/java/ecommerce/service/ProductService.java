@@ -22,14 +22,17 @@ import ecommerce.exceptions.ProductNotExistException;
 import ecommerce.model.Category;
 import ecommerce.model.Product;
 import ecommerce.repository.ProductRepository;
+import ecommerce.search.SearchIndexJobs;
 
 @Service
 public class ProductService {
 
     private final ProductRepository productRepository;
+    private final SearchIndexJobs searchIndexJobs;
 
-    public ProductService(ProductRepository productRepository) {
+    public ProductService(ProductRepository productRepository, SearchIndexJobs searchIndexJobs) {
         this.productRepository = productRepository;
+        this.searchIndexJobs = searchIndexJobs;
     }
 
     /** Legacy unbounded list ({@code GET /product/}); new callers use {@code CatalogService}. */
@@ -42,7 +45,10 @@ public class ProductService {
         return productDtos;
     }
 
-    /** Creates a product with its initial stock. A new product can appear on any cached catalog page. */
+    /**
+     * Creates a product with its initial stock. A new product can appear on any cached catalog page. The search
+     * index job commits with the product.
+     */
     @Transactional
     @CacheEvict(cacheNames = CATALOG_PAGE, allEntries = true)
     public Product addProduct(ProductDto productDto, Category category) {
@@ -53,13 +59,16 @@ public class ProductService {
         product.setPriceCents(toCents(productDto.getPrice()));
         product.setName(productDto.getName());
         product.setStock(productDto.getStock());
-        return productRepository.save(product);
+        Product saved = productRepository.save(product);
+        searchIndexJobs.enqueue(saved.getId());
+        return saved;
     }
 
     /**
      * Updates the descriptive fields of an existing product under a row lock. Stock is never written here
      * (and the column is not updatable through JPA), so an edit cannot undo concurrent reservations.
-     * The cached detail and every cached page are evicted after the commit.
+     * The cached detail and every cached page are evicted after the commit. The search version is bumped and an
+     * index job queued in the same transaction, so the change reaches Elasticsearch if and only if it commits.
      */
     @Transactional
     @Caching(evict = {
@@ -74,6 +83,8 @@ public class ProductService {
         product.setDescription(update.getDescription());
         product.setPriceCents(toCents(update.getPrice()));
         product.setCategory(category);
+        product.bumpSearchVersion();
+        searchIndexJobs.enqueue(productId);
     }
 
     /**

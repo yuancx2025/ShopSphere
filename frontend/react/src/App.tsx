@@ -24,6 +24,7 @@ import PaymentSuccess from './pages/checkout/Success';
 import PaymentFailed from './pages/checkout/Failed';
 import OrderHistory from './pages/order/OrderHistory';
 import OrderDetails from './pages/order/OrderDetails';
+import SearchPage from './pages/search/SearchPage';
 
 import { Category } from './types';
 import { API_BASE_URL } from './utils/constants';
@@ -60,6 +61,7 @@ const App: React.FC = () => {
             path="/"
             element={<Home categories={categories} loading={loading} />}
           />
+          <Route path="/search" element={<SearchPage categories={categories} />} />
           <Route
             path="/category/:id"
             element={
