@@ -70,8 +70,7 @@ def measure(label, command, route, *options):
     return directory, manifest, results
 
 
-def paired(route, block):
-    rate = "500"
+def paired(route, block, rate):
     modes = ("redis", "none") if block == 2 else ("none", "redis")
     runs = {}
     for mode in modes:
@@ -87,11 +86,11 @@ def paired(route, block):
     cli("compare", str(off[0]), str(on[0]))
 
 
-def ladder():
+def ladder(rates):
     for mode in ("none", "redis"):
         switch_cache(mode)
         measure(f"detail-ladder-{mode}", "ladder", "detail", "--pattern", "hot",
-                "--rates", "250,500,750,1000,1250,1500")
+                "--rates", rates)
 
 
 def cold_and_uniform():
@@ -131,15 +130,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("scenario", choices=("page", "detail", "ladder", "cold", "outage"))
     parser.add_argument("--block", type=int, choices=(1, 2, 3), default=1)
+    parser.add_argument("--rate", default="500")
+    parser.add_argument("--rates", default="250,500,750,1000,1250,1500")
     args = parser.parse_args()
 
     bench.sh(["docker", "pull", bench.K6_IMAGE])
     cli("up", "--observability", "--cache", "none")
     cli("seed")
     if args.scenario in ("page", "detail"):
-        paired(args.scenario, args.block)
+        paired(args.scenario, args.block, args.rate)
+    elif args.scenario == "ladder":
+        ladder(args.rates)
     else:
-        {"ladder": ladder, "cold": cold_and_uniform, "outage": outage}[args.scenario]()
+        {"cold": cold_and_uniform, "outage": outage}[args.scenario]()
 
 
 if __name__ == "__main__":

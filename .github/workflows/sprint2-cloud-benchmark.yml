@@ -3,6 +3,10 @@ name: Sprint 2 cloud benchmark
 on:
   push:
     branches: [codex/sprint-2-cloud-benchmark]
+    paths:
+      - .github/workflows/sprint2-cloud-benchmark.yml
+      - benchmarks/**
+      - backend/**
 
 permissions:
   contents: read
@@ -31,21 +35,20 @@ jobs:
           retention-days: 14
 
   benchmark:
+    name: benchmark (${{ matrix.scenario }}, ${{ matrix.rate }}, ${{ matrix.block }})
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {scenario: page, block: 1}
-          - {scenario: page, block: 2}
-          - {scenario: page, block: 3}
-          - {scenario: detail, block: 1}
-          - {scenario: detail, block: 2}
-          - {scenario: detail, block: 3}
-          - {scenario: ladder, block: 1}
-          - {scenario: cold, block: 1}
-          - {scenario: outage, block: 1}
+          - {scenario: detail, block: 1, rate: '1250'}
+          - {scenario: detail, block: 2, rate: '1250'}
+          - {scenario: detail, block: 3, rate: '1250'}
+          - {scenario: detail, block: 1, rate: '1500'}
+          - {scenario: detail, block: 2, rate: '1500'}
+          - {scenario: detail, block: 3, rate: '1500'}
+          - {scenario: ladder, block: 1, rate: '1500'}
     env:
       BENCH_BACKEND_CPUS: '1.5'
       BENCH_MYSQL_CPUS: '1'
@@ -55,11 +58,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run benchmark
-        run: python3 benchmarks/sprint2_cloud.py "${{ matrix.scenario }}" --block "${{ matrix.block }}"
+        run: >-
+          python3 benchmarks/sprint2_cloud.py "${{ matrix.scenario }}"
+          --block "${{ matrix.block }}" --rate "${{ matrix.rate }}"
+          --rates 1500,1750,2000,2250,2500,3000
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: benchmark-${{ matrix.scenario }}-${{ matrix.block }}
+          name: benchmark-${{ matrix.scenario }}-${{ matrix.rate }}-${{ matrix.block }}
           path: benchmarks/results/runs
           retention-days: 14
           if-no-files-found: ignore
