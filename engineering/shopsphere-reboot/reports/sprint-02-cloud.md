@@ -72,3 +72,34 @@ The final ladder started at 250 req/s and stepped up through the same rates on b
 At 2,250 req/s both variants passed. P95 fell **125.92 → 28.53 ms**, and SQL reads per success fell **0.997 → 0.062**. Five-second pool samples peaked at 184 waiting connections with caching off and zero with caching on. At 1,000 req/s, this ladder showed a smaller latency difference, **1.161 → 1.129 ms**, and SQL reads fell **0.990 → 0.122**. The roughly 88% SQL reduction at 1,000 req/s held across both cloud ladders and was close to the laptop's 87%.
 
 The gradual ladder's highest passing steps rose from 2,250 to 2,500 req/s, an 11% difference in this one-minute experiment. The laptop's short ladder rose from 1,000 to 1,500 req/s and failed to repeat at 1,000 in its second pass. For sustained capacity, the three five-minute trials per variant establish 1,250 req/s on these runners. The higher ladder steps need their own warmed five-minute confirmation before quoting a sustained capacity gain.
+
+## Hit and miss latency split
+
+[Split run](https://github.com/yuancx2025/ShopSphere/actions/runs/42748696509) · commit `067a5e9` on `claude/cache-hit-miss-cloud`
+
+The earlier detail A/B left a question: why did the cache cut p50 but not p95 at 500 req/s? With the Redis cache on, the backend now sends `X-Cache: HIT|MISS` on `GET /product/{id}`. A request served after a Redis error or during the bypass window counts as a miss. k6 records `cache_hit_duration` and `cache_miss_duration` from that header. Each of six runners measured cache off, cache on with a 60 s TTL, and cache on with a 300 s TTL. The variant order rotated across the three runners at each rate. Every run used the hot trace, 5 minutes of warm-up and 5 minutes of measurement. All 18 runs passed the gate with zero drops and zero unexpected failures. Each value below is the median of three runs.
+
+| Hot detail | Cache off | 60 s TTL | 300 s TTL |
+| --- | ---: | ---: | ---: |
+| **500 req/s** · hit ratio | — | 82.3% | 94.2% |
+| p50 | 1.08 ms | 0.53 ms | 0.53 ms |
+| p95, all requests | 1.34 ms | 1.49 ms (+11%) | 1.42 ms (+6%) |
+| p95, hits only | — | **0.64 ms** | **0.64 ms** |
+| p50 / p95, misses only | — | 1.40 / 1.76 ms | 1.51 / 1.99 ms |
+| SQL reads per success | 1.000 | 0.177 | 0.058 |
+| **1,250 req/s** · hit ratio | — | 90.4% | 97.4% |
+| p50 | 1.14 ms | 0.61 ms | 0.60 ms |
+| p95, all requests | 10.54 ms | 7.21 ms (**−32%**) | 6.01 ms (**−43%**) |
+| p95, hits / misses | — | 6.87 / 11.20 ms | 5.90 / 10.39 ms |
+| SQL reads per success | 0.997 | 0.096 (−90%) | 0.026 (−97%) |
+
+Per-runner p95 changes against cache off were +11%, +32% and +32% (60 s) and +6%, +22% and +16% (300 s) at 500 req/s. At 1,250 req/s they were −32%, −39% and −53% (60 s) and −43%, −69% and −56% (300 s).
+
+What this shows:
+
+- **A hit is about twice as fast as an uncached read, and a miss is slower than one.** At 500 req/s, hit p95 was 0.64 ms against 1.34 ms for the uncached read. Miss p50 was 1.40 ms against 1.08 ms. The difference is the extra Redis GET and the synchronous SET that `@Cacheable` adds to a miss.
+- **At low load, p95 measures the misses.** With 82% hits, the slowest 5% of requests are all misses, so p95 lands on the miss distribution and is higher than having no cache. At 94.2% hits, p95 still falls just inside the miss tail. Overall p95 only drops below the uncached value once more than 95% of requests hit. The 300 s TTL brought the 500 req/s run to 94.2%, just short.
+- **Near capacity, the cache cuts p95 because the whole backend has less work.** At 1,250 req/s, hit p95 itself is several milliseconds, so the tail there is queueing on the 1.5-CPU backend, not Redis. The cache removes 90–97% of MySQL reads, so the queue is shorter for every request, including misses. All six paired runs improved.
+- **Earlier evidence at 1,250 req/s was mixed.** The earlier 60 s TTL run (2 minutes of warm-up) gave −54%, +3.5% and +9.4%. With 5 minutes of warm-up, all three pairs improved. Across both runs, 4 of 6 pairs improved at 60 s. The 300 s TTL improved 3 of 3 in one run.
+
+Résumé wording this supports: "Cut product-detail p95 by 32–43% (10.5 → 6.0–7.2 ms) and MySQL reads per request by 90–97% at 1,250 req/s on 4-vCPU CI runners with Redis cache-aside caching." Name the TTL with the number you quote. The 300 s TTL also means displayed stock can lag checkout by up to 5 minutes. Admin edits still evict at once, and checkout always reserves against MySQL. Don't claim a p95 gain at 500 req/s: hits are faster there, but too few requests hit for p95 to show it.
