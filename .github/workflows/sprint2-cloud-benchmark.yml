@@ -2,7 +2,7 @@ name: Sprint 2 cloud benchmark
 
 on:
   push:
-    branches: [codex/sprint-2-cloud-benchmark]
+    branches: [codex/sprint-2-cloud-benchmark, claude/cache-hit-miss-cloud]
     paths:
       - .github/workflows/sprint2-cloud-benchmark.yml
       - benchmarks/**
@@ -37,12 +37,17 @@ jobs:
   benchmark:
     name: benchmark (${{ matrix.scenario }}, ${{ matrix.rate }}, ${{ matrix.block }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {scenario: ladder, block: 1, rate: '250'}
+          - {scenario: split, block: 1, rate: '500'}
+          - {scenario: split, block: 2, rate: '500'}
+          - {scenario: split, block: 3, rate: '500'}
+          - {scenario: split, block: 1, rate: '1250'}
+          - {scenario: split, block: 2, rate: '1250'}
+          - {scenario: split, block: 3, rate: '1250'}
     env:
       BENCH_BACKEND_CPUS: '1.5'
       BENCH_MYSQL_CPUS: '1'

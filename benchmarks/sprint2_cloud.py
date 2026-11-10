@@ -86,6 +86,45 @@ def paired(route, block, rate):
     cli("compare", str(off[0]), str(on[0]))
 
 
+def annotate(label, result):
+    """One GitHub notice per run, readable through the public check-run annotations API."""
+    lat = result["latency_ms"]
+    split = result.get("latency_by_cache") or {}
+    cache = result.get("cache") or {}
+
+    def ms(value):
+        return "n/a" if value is None else f"{value:.3f}"
+
+    parts = [
+        f"gate={'pass' if result['gate_passed'] else 'FAIL'}",
+        f"drops={result['dropped_iterations']}",
+        f"fail%={result['unexpected_failure_rate'] * 100:.2f}",
+        f"p50={ms(lat['med'])}", f"p95={ms(lat['p(95)'])}", f"p99={ms(lat['p(99)'])}",
+        f"sql/ok={ms(result.get('app_sql_reads_per_success'))}",
+        f"hit%={ms((cache.get('hit_ratio') or 0) * 100) if cache.get('hit_ratio') is not None else 'n/a'}",
+    ]
+    for outcome in ("hit", "miss"):
+        values = split.get(outcome)
+        if values:
+            parts.append(f"{outcome}: n={values['count']} p50={ms(values['med'])} p95={ms(values['p(95)'])} "
+                         f"p99={ms(values['p(99)'])}")
+    print(f"::notice title={label}::{' | '.join(parts)}", flush=True)
+
+
+def split_by_outcome(block, rate):
+    """Cache off, cache on with a 60 s TTL and with a 300 s TTL, with hit and miss latency measured apart."""
+    variants = [("none", "60s"), ("redis", "60s"), ("redis", "300s")]
+    shift = (block - 1) % len(variants)
+    for mode, ttl in variants[shift:] + variants[:shift]:
+        os.environ["BENCH_CACHE_TTL"] = ttl
+        switch_cache(mode)
+        label = f"split-{rate}-{block}-" + ("off" if mode == "none" else f"ttl{ttl}")
+        # A 5 m warm-up lets the 300 s TTL reach its steady hit ratio before the measured window.
+        _, _, results = measure(label, "run", "detail", "--rate", rate, "--pattern", "hot",
+                                "--trials", "1", "--warmup", "5m", "--duration", "5m")
+        annotate(label, results[0])
+
+
 def ladder(rates):
     for mode in ("none", "redis"):
         switch_cache(mode)
@@ -128,7 +167,7 @@ def outage():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=("page", "detail", "ladder", "cold", "outage"))
+    parser.add_argument("scenario", choices=("page", "detail", "ladder", "cold", "outage", "split"))
     parser.add_argument("--block", type=int, choices=(1, 2, 3), default=1)
     parser.add_argument("--rate", default="500")
     parser.add_argument("--rates", default="250,500,750,1000,1250,1500")
@@ -139,6 +178,8 @@ def main():
     cli("seed")
     if args.scenario in ("page", "detail"):
         paired(args.scenario, args.block, args.rate)
+    elif args.scenario == "split":
+        split_by_outcome(args.block, args.rate)
     elif args.scenario == "ladder":
         ladder(args.rates)
     else:
