@@ -8,6 +8,8 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 
+import ecommerce.search.SearchUnavailableException;
+
 @ControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -34,6 +36,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(value = ProductNotExistException.class)
     public final ResponseEntity<String> handleProductNotExistException(ProductNotExistException exception) {
         return new ResponseEntity<>(exception.getMessage(), HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(value = SearchUnavailableException.class)
+    public final ResponseEntity<String> handleSearchUnavailable(SearchUnavailableException exception) {
+        return new ResponseEntity<>("Search is temporarily unavailable", HttpStatus.SERVICE_UNAVAILABLE);
     }
 
     @ExceptionHandler(value = OrderNotFoundException.class)
