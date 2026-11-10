@@ -65,6 +65,54 @@ services:
     cpus: ${BENCH_ES_CPUS:-2}
     mem_limit: ${BENCH_ES_MEM:-2g}
 
+  # Sprint 5 catalog-event broker. Only started by the "events" profile. One name server and one broker, both on
+  # the classic remoting protocol (no proxy). The image is multi-arch (amd64 and arm64). Heaps are set explicitly
+  # because the stock start scripts ask for up to 8 GB. JAVA_OPT_EXT comes last, so its -Xmx wins.
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.3.2
+    profiles: ["events"]
+    command: ["sh", "mqnamesrv"]
+    environment:
+      JAVA_OPT_EXT: -Xms${BENCH_MQ_NAMESRV_HEAP:-128m} -Xmx${BENCH_MQ_NAMESRV_HEAP:-128m}
+    healthcheck:
+      # A port probe, not mqadmin: every mqadmin call starts another JVM inside this container's memory limit.
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/9876"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    cpus: 0.5
+    mem_limit: ${BENCH_MQ_NAMESRV_MEM:-384m}
+
+  rocketmq-broker:
+    image: apache/rocketmq:5.3.2
+    profiles: ["events"]
+    depends_on:
+      rocketmq-namesrv:
+        condition: service_healthy
+    # brokerIP1 is the address the broker advertises through the name server, so it has to be the service name
+    # that other containers on the bench network resolve. Topics are created explicitly (never auto-created by the
+    # first send), with admin commands run in a one-off container so they don't share the broker's memory limit.
+    command:
+      - sh
+      - -c
+      - |
+        printf 'brokerClusterName=bench\nbrokerName=broker-a\nbrokerId=0\nbrokerIP1=rocketmq-broker\nautoCreateTopicEnable=false\nflushDiskType=ASYNC_FLUSH\n' > /tmp/broker.conf
+        exec sh mqbroker -n rocketmq-namesrv:9876 -c /tmp/broker.conf
+    environment:
+      JAVA_OPT_EXT: >-
+        -Xms${BENCH_MQ_BROKER_HEAP:-512m} -Xmx${BENCH_MQ_BROKER_HEAP:-512m} -Xmn256m
+        -XX:MaxDirectMemorySize=256m
+    healthcheck:
+      # Port probe for the same reason. bench.py checks that the broker registered with the name server.
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/10911"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+    cpus: ${BENCH_MQ_BROKER_CPUS:-1}
+    mem_limit: ${BENCH_MQ_BROKER_MEM:-1g}
+
   backend:
     build:
       context: ../backend
