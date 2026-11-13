@@ -49,8 +49,8 @@ import io.micrometer.core.instrument.binder.MeterBinder;
  * database connection.</li>
  * <li>Redis errors never fail a request. {@link #errorHandler()} counts them and the read falls through to MySQL.
  * Short timeouts and {@code REJECT_COMMANDS} while disconnected keep that fallback fast, and after an error
- * {@link RedisBypassCache} skips Redis for {@code catalog.cache.bypass-after-error}, so a hung Redis (or a JVM
- * pause that makes every in-flight command time out at once) costs one timeout rather than one per request.</li>
+ * {@link RedisBypassCache} skips Redis for {@code catalog.cache.bypass-after-error}, so requests arriving after the first error
+ * can use MySQL directly while Redis is unavailable.</li>
  * </ul>
  */
 @Configuration
