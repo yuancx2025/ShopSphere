@@ -14,6 +14,7 @@ import static ecommerce.catalog.CatalogCacheConfig.PRODUCT_DETAIL;
 
 import ecommerce.catalog.CacheOutcome;
 import ecommerce.common.Money;
+import ecommerce.events.ProductChange;
 import ecommerce.dto.product.ProductDto;
 import ecommerce.dto.product.ProductUpdateDto;
 import ecommerce.dto.product.StockAdjustmentResponseDto;
@@ -23,14 +24,17 @@ import ecommerce.exceptions.ProductNotExistException;
 import ecommerce.model.Category;
 import ecommerce.model.Product;
 import ecommerce.repository.ProductRepository;
+import ecommerce.search.SearchIndexJobs;
 
 @Service
 public class ProductService {
 
     private final ProductRepository productRepository;
+    private final SearchIndexJobs searchIndexJobs;
 
-    public ProductService(ProductRepository productRepository) {
+    public ProductService(ProductRepository productRepository, SearchIndexJobs searchIndexJobs) {
         this.productRepository = productRepository;
+        this.searchIndexJobs = searchIndexJobs;
     }
 
     /** Legacy unbounded list ({@code GET /product/}); new callers use {@code CatalogService}. */
@@ -43,7 +47,10 @@ public class ProductService {
         return productDtos;
     }
 
-    /** Creates a product with its initial stock. A new product can appear on any cached catalog page. */
+    /**
+     * Creates a product with its initial stock. A new product can appear on any cached catalog page. The search
+     * index job commits with the product.
+     */
     @Transactional
     @CacheEvict(cacheNames = CATALOG_PAGE, allEntries = true)
     public Product addProduct(ProductDto productDto, Category category) {
@@ -54,13 +61,16 @@ public class ProductService {
         product.setPriceCents(toCents(productDto.getPrice()));
         product.setName(productDto.getName());
         product.setStock(productDto.getStock());
-        return productRepository.save(product);
+        Product saved = productRepository.save(product);
+        searchIndexJobs.enqueue(saved.getId(), ProductChange.CREATED);
+        return saved;
     }
 
     /**
      * Updates the descriptive fields of an existing product under a row lock. Stock is never written here
      * (and the column is not updatable through JPA), so an edit cannot undo concurrent reservations.
-     * The cached detail and every cached page are evicted after the commit.
+     * The cached detail and every cached page are evicted after the commit. The search version is bumped and an
+     * index job queued in the same transaction, so the change reaches Elasticsearch if and only if it commits.
      */
     @Transactional
     @Caching(evict = {
@@ -75,11 +85,14 @@ public class ProductService {
         product.setDescription(update.getDescription());
         product.setPriceCents(toCents(update.getPrice()));
         product.setCategory(category);
+        product.bumpSearchVersion();
+        searchIndexJobs.enqueue(productId, ProductChange.UPDATED);
     }
 
     /**
      * Changes stock by a signed delta in one guarded UPDATE, so it composes with concurrent reservations
-     * instead of overwriting them. Rejects a change that would make stock negative.
+     * instead of overwriting them. Rejects a change that would make stock negative. The outbox row commits with
+     * the stock change, so the cache invalidator hears about it (stock isn't indexed, so search ignores it).
      */
     @Transactional
     @Caching(evict = {
@@ -95,6 +108,7 @@ public class ProductService {
             }
             throw new InsufficientStockException("Adjustment of " + delta + " would make stock negative");
         }
+        searchIndexJobs.enqueue(productId, ProductChange.STOCK);
         return new StockAdjustmentResponseDto(productId, delta, productRepository.currentStock(productId));
     }
 

@@ -27,6 +27,18 @@ export interface ProductPage {
   categoryId: number | null;
 }
 
+export type SearchSort = 'relevance' | 'price_asc' | 'price_desc';
+
+/** GET /product/search response. No total count: hasMore says whether the next page has results. */
+export interface SearchPage {
+  items: Product[];
+  page: number;
+  size: number;
+  hasMore: boolean;
+  sort: SearchSort;
+  engine: string;
+}
+
 export interface StockAdjustmentResult {
   productId: number;
   delta: number;

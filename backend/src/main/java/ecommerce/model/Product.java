@@ -47,6 +47,11 @@ public class Product {
     @Column(name = "stock", nullable = false, updatable = false)
     private int stock;
 
+    /** Bumped by every admin write to a searchable field; the Elasticsearch indexer's external version. */
+    @JsonIgnore
+    @Column(name = "search_version", nullable = false)
+    private long searchVersion = 1;
+
     @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "category_id", nullable = false)
@@ -115,6 +120,15 @@ public class Product {
     /** Initial stock for a new product. Has no effect on a persisted product (the column is not updatable). */
     public void setStock(int stock) {
         this.stock = stock;
+    }
+
+    public long getSearchVersion() {
+        return searchVersion;
+    }
+
+    /** Marks the searchable fields as changed, so the next index job wins over any older snapshot. */
+    public void bumpSearchVersion() {
+        searchVersion++;
     }
 
     @Override

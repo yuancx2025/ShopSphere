@@ -5,7 +5,9 @@ harness for the catalog and checkout APIs, with server-side metrics to explain t
 paginated catalog scenario, the checkout contention burst, query-plan capture and run comparison
 ([Sprint 1 report](../engineering/shopsphere-reboot/reports/sprint-01.md)). Sprint 2 added the Redis catalog cache
 switch, hit/miss/error counters per trial, cold-cache runs and outage injection
-([Sprint 2 report](../engineering/shopsphere-reboot/reports/sprint-02.md)).
+([Sprint 2 report](../engineering/shopsphere-reboot/reports/sprint-02.md)). Sprint 3 adds an optional Elasticsearch
+service (`up --search`), the WANDS relevance catalog, a search load scenario, an indexing-lag probe and the NDCG
+evaluator ([Sprint 3 report](../engineering/shopsphere-reboot/reports/sprint-03.md)).
 
 Everything runs in Docker. You need Docker with Compose v2 and Python 3.10 or newer. k6 runs from the
 pinned `grafana/k6` image, so you don't need to install it.
@@ -33,11 +35,14 @@ is at <http://127.0.0.1:9090>.
 | Path | Purpose |
 | --- | --- |
 | `bench.py` | Runner: `up`, `seed`, `run`, `ladder`, `burst`, `explain`, `compare`, `cache`, `smoke`, `down`. Standard library only. |
-| `docker-compose.bench.yml` | Dedicated stack (project `shopsphere-bench`): MySQL, Redis, backend with the `bench` profile, optional Prometheus and Grafana. It doesn't touch the dev stack's containers, ports or database. |
-| `seed/generate_fixture.py` | Deterministic fixture (v2): 10,000 catalog products in 12 categories with exact `price_cents`, a hot SKU with 20 units, 200 shoppers and 100 carts. Same seed, same SQL bytes. |
+| `docker-compose.bench.yml` | Dedicated stack (project `shopsphere-bench`): MySQL, Redis, backend with the `bench` profile, optional Elasticsearch (`search` profile), optional RocketMQ name server and broker (`events` profile, Sprint 5), optional Prometheus and Grafana. It doesn't touch the dev stack's containers, ports or database. |
+| `seed/generate_fixture.py` | Deterministic fixture (v3; same rows as v2, and the reset also clears `search_index_jobs`): 10,000 catalog products in 12 categories with exact `price_cents`, a hot SKU with 20 units, 200 shoppers and 100 carts. Same seed, same SQL bytes. |
 | `k6/product-detail.js` | `GET /product/{productID}`, uniform or hot-set (80% of reads on 20% of products) access. |
 | `k6/product-list.js` | Legacy `GET /product/` (whole catalog). Use a low rate. |
 | `k6/product-page.js` | `GET /product/page`: first page of a category per request, checked for size, category and sort order. |
+| `k6/product-search.js` | `GET /product/search` with the 480 WANDS queries as a deterministic trace; `ENGINE=mysql\|elasticsearch`. |
+| `seed/load_wands.py` | Maps the WANDS dataset (MIT) into the catalog and writes the graded query set with a fixed tuning/held-out split. |
+| `search_eval.py` | NDCG@10 (and judged-only NDCG@10) per engine through the real endpoint, and the Elasticsearch tuning grid on the tuning split. |
 | `k6/checkout-skeleton.js` | Reads each shopper's cart with tokens `bench.py` signed in before the run. |
 | `k6/checkout-burst.js` | One `POST /order/create-checkout-session` per shopper, all at once, against the fake payment gateway. |
 | `observability/` | Prometheus scrape config and the provisioned Grafana dashboard. |
@@ -46,8 +51,13 @@ is at <http://127.0.0.1:9090>.
 
 | Command | What it does |
 | --- | --- |
-| `up [--observability] [--cache none\|redis]` | Builds the backend image and starts the stack, waiting for health checks. `--cache` sets the backend's catalog cache (the A/B switch) and recreates the backend; without it, `$BENCH_CACHE` or `none` is used. |
-| `seed [--products N --seed S]` | Generates the fixture, resets the bench database to it and verifies the counts. |
+| `up [--observability] [--cache none\|redis] [--search] [--events]` | Builds the backend image and starts the stack, waiting for health checks. `--cache` sets the backend's catalog cache (the A/B switch) and recreates the backend; without it, `$BENCH_CACHE` or `none` is used. `--search` also starts Elasticsearch and turns on the backend's Elasticsearch engine and indexer (`$BENCH_SEARCH`). The MySQL FULLTEXT engine is always on, so `GET /product/search?engine=mysql\|elasticsearch` compares both on one stack. `--events` (Sprint 5, `$BENCH_EVENTS`) also starts RocketMQ, creates the `catalog-product-changed` topic, and turns on the backend's outbox publisher, and starts a separate `worker` container (same image, 1 CPU / 1 GB) that runs the two consumer groups (`search-indexer`, `cache-invalidator`), so a worker can be stopped or killed while admin edits continue; it implies `--search` and `--cache redis`. `BENCH_MAX_RECONSUME` sets the worker's redeliveries before a message goes to the group's dead-letter topic (default 5). |
+| `seed [--products N --seed S]` | Generates the fixture, resets the bench database to it and verifies the counts. With search on, it then rebuilds the index through `POST /product/search/rebuild` (as the Flyway V2 test admin), waits for the job queue to drain, and checks that the document count equals the product count. It logs the backfill time and rate. |
+| `seed-wands [--split-seed S]` | Loads the WANDS catalog (42,994 products) from `results/wands/raw/` (prints the download commands if missing) and, with search on, indexes it. Required by `run search`; the other scenarios need `seed`. |
+| `run search --engine mysql\|elasticsearch --rate R` | Search latency on the WANDS catalog. Both engines run on one stack, so compare them with the same trace seed. |
+| `search-lag [--samples 50 --interval-ms 50] [--outage S]` | Times admin edit → first search hit for each sample; with `--outage`, pauses Elasticsearch for S seconds while editing and times the catch-up. Restores the product names afterwards. |
+| `events run [--rate 50 --warmup 30s --duration 5m] [--fault kill-worker\|kill-backend\|stop-worker\|stop-es --fault-at 60 --fault-for 30]` | Sprint 5 pipeline benchmark (`k6/catalog-edits.js`): admin edits at a fixed rate, half re-saves (`UPDATED`) and half +1 stock adjustments (`STOCK`), one outbox event each. Samples outbox and ledger counts every second, waits for the drain, then reconciles every outbox ID in the window against each group's `consumed_events` rows (missing, duplicate and orphan rows), computes outbox-to-effect lag from MySQL timestamps, checks every edited product's search document version against `products.search_version`, and counts dead letters. A fault is injected once; the result adds peak backlog and time back to the pre-fault backlog. Results in `results/events/<run>/result.json`. |
+| `events replay RUN [--group G] [--all]` | Operator replay: clears `published_at` on the run's events that a group never applied (for example after dead-lettering), so the publisher re-sends them under their original IDs, then reconciles again (`replay.json`). `--all` re-sends every event in the run, which is the state a publisher crash between send and mark leaves; every redelivery must be skipped (`resend.json`). |
 | `run SCENARIO --rate R [--pattern hot] [--trials 3 --warmup 2m --duration 5m]` | For each trial, a warm-up k6 run, then a measured run with MySQL digests snapshotted around it. |
 | `run page --rate R --sort id\|price_asc [--size 20]` | Same as `run`, for the paginated catalog. |
 | `ladder SCENARIO --rates 40,200,500,1000,2000` | One shorter trial per rate (30 s warm-up, 1 min measured). Stops at the first step that fails the gate, then prints the command to confirm the highest passing step. |
@@ -66,7 +76,8 @@ Flyway migrations never touches another branch's bench database. Don't measure t
 share the Docker VM's CPUs.
 
 The CPU and memory limits come from `BENCH_BACKEND_CPUS` (2), `BENCH_BACKEND_MEM` (1536m), `BENCH_MYSQL_CPUS` (2),
-`BENCH_MYSQL_MEM` (1g), `BENCH_REDIS_CPUS` (1), `BENCH_REDIS_MEM` (256m) and `BENCH_K6_CPUS` (2). `BENCH_CACHE_TTL`
+`BENCH_MYSQL_MEM` (1g), `BENCH_REDIS_CPUS` (1), `BENCH_REDIS_MEM` (256m), `BENCH_ES_CPUS` (2), `BENCH_ES_MEM` (2g),
+`BENCH_ES_HEAP` (1g) and `BENCH_K6_CPUS` (2). `BENCH_CACHE_TTL`
 (60s) sets the cache TTL. Keep them fixed within an A/B comparison. Every manifest records them.
 
 ## How a measurement works

@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""ShopSphere benchmark runner (Sprints 0-2). Standard library only.
+"""ShopSphere benchmark runner (Sprints 0-5). Standard library only.
 
-  python3 benchmarks/bench.py up [--observability] [--cache redis]   build and start the bench stack
+  python3 benchmarks/bench.py up [--observability] [--cache redis] [--search] [--events]   build and start the stack
   python3 benchmarks/bench.py seed [--products 10000]  load the deterministic fixture
   python3 benchmarks/bench.py run detail --rate 40 --pattern hot --trials 3
   python3 benchmarks/bench.py run page --rate 40 --sort price_asc
+  python3 benchmarks/bench.py run search --rate 40 --engine elasticsearch   (after seed-wands)
   python3 benchmarks/bench.py ladder detail --rates 40,200,500,1000,2000
   python3 benchmarks/bench.py burst --users 100 --stock 20 --trials 3   checkout contention + invariants
   python3 benchmarks/bench.py explain                  catalog query plans and rows examined
   python3 benchmarks/bench.py compare RUN_A RUN_B      side-by-side summary of two runs
   python3 benchmarks/bench.py cache stats|flush|stop|start|pause|unpause   Redis cache and outages (Sprint 2)
   python3 benchmarks/bench.py smoke                    short end-to-end check (used by CI)
+  python3 benchmarks/bench.py events run --rate 50 [--fault stop-worker]   event pipeline load + reconcile (Sprint 5)
+  python3 benchmarks/bench.py events replay RUN        re-publish a run's unapplied events under their IDs
   python3 benchmarks/bench.py down [--volumes]
 
 BENCH_PROJECT (default shopsphere-bench) and BENCH_BACKEND_PORT / BENCH_PROMETHEUS_PORT /
@@ -33,6 +36,8 @@ import shlex
 import statistics
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -50,10 +55,16 @@ BACKEND_IMAGE = os.environ.get(
     "BENCH_BACKEND_IMAGE", "shopsphere-backend:bench" if PROJECT == "shopsphere-bench" else f"shopsphere-backend:{PROJECT}")
 os.environ.setdefault("BENCH_BACKEND_IMAGE", BACKEND_IMAGE)
 DATABASE = "shopsphere_bench"
+# Sprint 5: must match the broker image in docker-compose.bench.yml and events.topic in the backend.
+ROCKETMQ_IMAGE = "apache/rocketmq:5.3.2"
+EVENT_TOPIC = "catalog-product-changed"
 MYSQL_ROOT_PASSWORD = "bench-root"
 RESULTS_DIR = BENCH_DIR / "results"
 FIXTURE_DIR = RESULTS_DIR / "fixture"
 GENERATOR = BENCH_DIR / "seed" / "generate_fixture.py"
+WANDS_LOADER = BENCH_DIR / "seed" / "load_wands.py"
+WANDS_DIR = RESULTS_DIR / "wands"
+WANDS_URL = "https://raw.githubusercontent.com/wayfair/WANDS/main/dataset"
 
 APP_TABLES = "products|categories|users|cart|orders|orderitems|wishlist|processed_stripe_events"
 APP_READ_RE = re.compile(rf"^SELECT\b.*?\bFROM\s+`?({APP_TABLES})`?(\s|$)", re.IGNORECASE | re.DOTALL)
@@ -63,6 +74,7 @@ SCENARIOS = {
     "list": {"script": "product-list.js", "route": "product_list", "rate": 2},
     "cart": {"script": "checkout-skeleton.js", "route": "cart_read", "rate": 20, "tokens": True},
     "page": {"script": "product-page.js", "route": "product_page", "rate": 40, "cache": "catalogPage"},
+    "search": {"script": "product-search.js", "route": "product_search", "rate": 40, "queries": True},
 }
 
 LIMIT_DEFAULTS = {
@@ -73,7 +85,13 @@ LIMIT_DEFAULTS = {
     "BENCH_K6_CPUS": "2",
     "BENCH_REDIS_CPUS": "1",
     "BENCH_REDIS_MEM": "256m",
+    "BENCH_ES_CPUS": "2",
+    "BENCH_ES_MEM": "2g",
+    "BENCH_ES_HEAP": "1g",
 }
+# Test-only admin from Flyway V2, used to trigger the search index rebuild after seeding.
+ADMIN_EMAIL = "admin@shopsphere.com"
+ADMIN_PASSWORD = "admin123"
 
 
 # --------------------------------------------------------------------------- helpers
@@ -82,13 +100,19 @@ def log(message: str) -> None:
     print(f"[bench] {message}", flush=True)
 
 
-def sh(cmd: list[str], *, check: bool = True, capture: bool = False, stdin=None) -> subprocess.CompletedProcess:
+def sh(cmd: list[str], *, check: bool = True, capture: bool = False, stdin=None,
+       input_text: str | None = None) -> subprocess.CompletedProcess:
+    if input_text is not None:
+        return subprocess.run(cmd, check=check, text=True, input=input_text,
+                              stdout=subprocess.PIPE if capture else None)
     return subprocess.run(cmd, check=check, text=True, stdin=stdin,
                           stdout=subprocess.PIPE if capture else None)
 
 
 def compose(*args: str, observability: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    cmd = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE)]
+    # The search and events profiles are always on: `up` names its services explicitly, so Elasticsearch and
+    # RocketMQ only start with --search / --events, while exec/down can still reach them.
+    cmd = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), "--profile", "search", "--profile", "events"]
     if observability:
         cmd += ["--profile", "observability"]
     return sh(cmd + list(args), **kwargs)
@@ -273,6 +297,495 @@ def flush_cache() -> None:
     redis_cli("FLUSHALL")
 
 
+# --------------------------------------------------------------------------- Sprint 3: search
+
+def backend_search_enabled() -> bool:
+    out = compose("exec", "-T", "backend", "printenv", "SEARCH_ELASTICSEARCH_ENABLED",
+                  capture=True, check=False).stdout.strip()
+    return out == "true"
+
+
+def backend_events_enabled() -> bool:
+    out = compose("exec", "-T", "backend", "printenv", "EVENTS_ENABLED", capture=True, check=False).stdout.strip()
+    return out == "true"
+
+
+def es_get(path: str) -> dict:
+    out = compose("exec", "-T", "elasticsearch", "curl", "--silent", "--fail", f"http://127.0.0.1:9200{path}",
+                  capture=True).stdout
+    return json.loads(out)
+
+
+def admin_token() -> str:
+    body = json.dumps({"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}).encode()
+    request = urllib.request.Request(f"http://127.0.0.1:{BACKEND_PORT}/user/signIn", data=body,
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read())["token"]
+
+
+def rebuild_search_index(expected: int, timeout_s: float = 600) -> None:
+    """Recreates the index through the backend, waits for the backfill, and checks every product is indexed."""
+    request = urllib.request.Request(f"http://127.0.0.1:{BACKEND_PORT}/product/search/rebuild", data=b"",
+                                     method="POST", headers={"Authorization": f"Bearer {admin_token()}"})
+    started = time.monotonic()
+    with urllib.request.urlopen(request, timeout=60) as response:
+        queued = json.loads(response.read())["queued"]
+    log(f"search rebuild: {queued} index jobs queued")
+    events = backend_events_enabled()
+    while True:
+        if events:
+            # Sprint 5: outbox rows are kept after publishing, so wait for the documents themselves.
+            es_get("/products/_refresh")
+            pending = expected - es_get("/products/_count")["count"]
+        else:
+            pending = int(mysql("SELECT COUNT(*) FROM search_index_jobs", database=DATABASE)[0][0])
+        if pending <= 0:
+            break
+        if time.monotonic() - started > timeout_s:
+            raise SystemExit(f"search backfill still has {pending} jobs after {timeout_s:.0f}s")
+        time.sleep(0.5)
+    elapsed = time.monotonic() - started
+    es_get("/products/_refresh")
+    indexed = es_get("/products/_count")["count"]
+    if indexed != expected:
+        raise SystemExit(f"search index has {indexed} documents, expected {expected}")
+    log(f"search backfill: {indexed} documents in {elapsed:.1f}s ({indexed / elapsed:.0f} docs/s)")
+
+
+def http_json(method: str, path: str, body: dict | None = None, token: str | None = None) -> dict:
+    headers = {"Content-Type": "application/json"} | ({"Authorization": f"Bearer {token}"} if token else {})
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(f"http://127.0.0.1:{BACKEND_PORT}{path}", data=data, method=method,
+                                     headers=headers)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read())
+
+
+def rename_product(product_id: int, name: str, token: str) -> None:
+    current = http_json("GET", f"/product/{product_id}")
+    http_json("POST", f"/product/update/{product_id}", {
+        "name": name, "imageURL": current["imageURL"], "price": current["price"],
+        "description": current["description"], "categoryId": current["categoryId"]}, token)
+
+
+def visible(product_id: int, marker: str) -> bool:
+    page = http_json("GET", f"/product/search?q={marker}&engine=elasticsearch&size=5")
+    return any(item["id"] == product_id for item in page["items"])
+
+
+def wait_visible(product_id: int, marker: str, interval_s: float, timeout_s: float = 60) -> float:
+    started = time.monotonic()
+    while not visible(product_id, marker):
+        if time.monotonic() - started > timeout_s:
+            raise SystemExit(f"product {product_id} not searchable as {marker!r} after {timeout_s:.0f}s")
+        time.sleep(interval_s)
+    return time.monotonic() - started
+
+
+def percentile(values: list[float], p: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, round(p * len(ordered)) - 1))]
+
+
+def cmd_search_lag(args: argparse.Namespace) -> None:
+    """Write-to-search visibility: admin rename, then poll search until the new name finds the product."""
+    if not backend_search_enabled():
+        raise SystemExit("Elasticsearch is off; run `bench.py up --search` first")
+    token = admin_token()
+    # The admin update requires a description, and some WANDS products have none.
+    editable = [int(r[0]) for r in mysql("SELECT id FROM products WHERE description <> '' ORDER BY id",
+                                         database=DATABASE)]
+    total = len(editable)
+    run_tag = stamp().lower().replace("t", "").replace("z", "")
+    ids = [editable[(n * 7919) % total] for n in range(args.samples)]  # spread over the catalog, deterministic
+    originals = {pid: http_json("GET", f"/product/{pid}")["name"] for pid in ids}
+    result: dict = {"samples": args.samples, "probe_interval_ms": args.interval_ms, "started_at": utc_now(),
+                    "products": total, "git": git_info()}
+    try:
+        lags = []
+        for n, pid in enumerate(ids):
+            marker = f"lagprobe{run_tag}n{n}"
+            rename_product(pid, f"{originals[pid]} {marker}", token)  # returns after the commit
+            lags.append(wait_visible(pid, marker, args.interval_ms / 1000))
+            time.sleep(args.pause_ms / 1000)
+        result["healthy_seconds"] = {"p50": percentile(lags, 0.5), "p95": percentile(lags, 0.95), "max": max(lags),
+                                     "all": lags}
+        log(f"healthy: {len(lags)} edits, visibility p50 {percentile(lags, 0.5):.2f}s, "
+            f"p95 {percentile(lags, 0.95):.2f}s, max {max(lags):.2f}s (probe every {args.interval_ms} ms)")
+        if args.outage:
+            log(f"outage: pausing Elasticsearch, renaming {len(ids)} products, resuming after {args.outage}s")
+            compose("pause", "elasticsearch", capture=True)
+            try:
+                for n, pid in enumerate(ids):
+                    rename_product(pid, f"{originals[pid]} outage{run_tag}n{n}", token)
+                time.sleep(args.outage)
+                pending = int(mysql("SELECT COUNT(*) FROM search_index_jobs", database=DATABASE)[0][0])
+            finally:
+                compose("unpause", "elasticsearch", capture=True)
+            resumed = time.monotonic()
+            for n, pid in enumerate(ids):
+                wait_visible(pid, f"outage{run_tag}n{n}", args.interval_ms / 1000, timeout_s=120)
+            catch_up = time.monotonic() - resumed
+            result["outage"] = {"seconds": args.outage, "edits": len(ids), "jobs_queued_at_resume": pending,
+                                "catch_up_seconds": catch_up}
+            log(f"outage: {pending} jobs queued during {args.outage}s; all {len(ids)} edits searchable "
+                f"{catch_up:.2f}s after Elasticsearch resumed")
+    finally:
+        for pid, name in originals.items():
+            rename_product(pid, name, token)
+    out = RESULTS_DIR / "search-lag" / f"{stamp()}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2) + "\n")
+    log(f"results: {out.relative_to(REPO_DIR)}")
+
+
+# --------------------------------------------------------------------------- Sprint 5: catalog events
+
+EVENT_GROUPS = ("search-indexer", "cache-invalidator")
+EVENT_COUNTERS = {"events_effects_total": "effects", "events_duplicates_total": "duplicates",
+                  "events_effect_failures_total": "failures"}
+FAULTS = {
+    # name: (service, action). kill-* restarts at once (a crash window); stop-* stays down for --fault-for.
+    "kill-backend": ("backend", "kill"),
+    "kill-worker": ("worker", "kill"),
+    "stop-worker": ("worker", "stop"),
+    "stop-es": ("elasticsearch", "stop"),
+}
+
+
+def outbox_max_id() -> int:
+    return int(mysql("SELECT COALESCE(MAX(id), 0) FROM search_index_jobs", database=DATABASE)[0][0])
+
+
+def pipeline_counts(first_id: int) -> dict:
+    """Outbox rows from first_id, how many the broker has not accepted yet, and each group's committed effects."""
+    groups = ", ".join(f"(SELECT COUNT(*) FROM consumed_events WHERE consumer_group = '{g}' AND event_id >= {first_id})"
+                       for g in EVENT_GROUPS)
+    row = mysql(f"SELECT (SELECT COUNT(*) FROM search_index_jobs WHERE id >= {first_id}), "
+                f"(SELECT COUNT(*) FROM search_index_jobs WHERE id >= {first_id} AND published_at IS NULL), {groups}",
+                database=DATABASE)[0]
+    counts = {"outbox": int(row[0]), "unpublished": int(row[1])}
+    for group, value in zip(EVENT_GROUPS, row[2:]):
+        counts[group] = int(value)
+    return counts
+
+
+def worker_counters() -> dict[str, float] | None:
+    """Per-group effect, duplicate-delivery and failure counters from the worker, or None while it is down."""
+    out = compose("exec", "-T", "worker", "curl", "--silent", "--fail", "http://127.0.0.1:8081/actuator/prometheus",
+                  capture=True, check=False).stdout
+    if not out:
+        return None
+    totals: dict[str, float] = {}
+    for line in out.splitlines():
+        match = PROM_LINE_RE.match(line)
+        if match and match.group(1) in EVENT_COUNTERS:
+            group = dict(PROM_LABEL_RE.findall(match.group(2))).get("consumer", "?")
+            key = f"{group}.{EVENT_COUNTERS[match.group(1)]}"
+            totals[key] = totals.get(key, 0.0) + float(match.group(3))
+    return totals
+
+
+class CounterTotals:
+    """Sums worker counters across worker restarts, which reset them to zero."""
+
+    def __init__(self) -> None:
+        self.last: dict[str, float] = {}
+        self.offset: dict[str, float] = {}
+
+    def add(self, sample: dict[str, float] | None) -> None:
+        for key, value in (sample or {}).items():
+            if value < self.last.get(key, 0.0):
+                self.offset[key] = self.offset.get(key, 0.0) + self.last[key]
+            self.last[key] = value
+
+    def totals(self) -> dict[str, float]:
+        return {key: self.offset.get(key, 0.0) + value for key, value in self.last.items()}
+
+
+def dead_letters() -> dict[str, int]:
+    """Messages in each group's dead-letter topic (0 when the broker never created it). One-off mqadmin container."""
+    counts = {}
+    for group in EVENT_GROUPS:
+        # A missing topic (nothing dead-lettered yet) prints a stack trace on stderr; that means 0.
+        out = subprocess.run(["docker", "run", "--rm", "--network", NETWORK, "-e", "JAVA_OPT_EXT=-Xmx256m",
+                              ROCKETMQ_IMAGE, "sh", "mqadmin", "topicStatus", "-n", "rocketmq-namesrv:9876",
+                              "-t", f"%DLQ%{group}"],
+                             text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False).stdout
+        total = 0
+        for line in out.splitlines():
+            parts = line.split()
+            # Rows: broker name, queue id, min offset, max offset, last updated.
+            if len(parts) >= 4 and parts[1].isdigit() and parts[3].isdigit():
+                total += int(parts[3]) - int(parts[2])
+        counts[group] = total
+    return counts
+
+
+def es_post(path: str, body: dict) -> dict:
+    out = compose("exec", "-T", "elasticsearch", "curl", "--silent", "--fail", "-H", "Content-Type: application/json",
+                  "-X", "POST", f"http://127.0.0.1:9200{path}", "--data-binary", "@-",
+                  input_text=json.dumps(body), capture=True).stdout
+    return json.loads(out)
+
+
+def search_version_mismatches(first_id: int, last_id: int) -> dict:
+    """Edited products whose search document version differs from products.search_version after the drain."""
+    rows = mysql("SELECT p.id, p.search_version FROM products p JOIN (SELECT DISTINCT product_id FROM search_index_jobs"
+                 f" WHERE id BETWEEN {first_id} AND {last_id} AND change_type = 'UPDATED') j ON j.product_id = p.id",
+                 database=DATABASE)
+    expected = {int(pid): int(version) for pid, version in rows}
+    mismatched = []
+    ids = sorted(expected)
+    for start in range(0, len(ids), 1000):
+        chunk = ids[start:start + 1000]
+        docs = es_post("/products/_mget?_source=false", {"ids": [str(i) for i in chunk]})["docs"]
+        for doc in docs:
+            if not doc.get("found") or doc.get("_version") != expected[int(doc["_id"])]:
+                mismatched.append(int(doc["_id"]))
+    return {"edited_products": len(expected), "mismatched": len(mismatched), "examples": mismatched[:10]}
+
+
+def reconcile(first_id: int, last_id: int) -> dict:
+    """Matches every outbox ID in the range against each consumer group's ledger, with lag and throughput."""
+    where = f"id BETWEEN {first_id} AND {last_id}"
+    row = mysql(f"SELECT COUNT(*), SUM(published_at IS NULL), SUM(change_type = 'UPDATED'), SUM(change_type = 'STOCK'),"
+                f" TIMESTAMPDIFF(MICROSECOND, MIN(created_at), MAX(created_at)) / 1e6 FROM search_index_jobs WHERE {where}",
+                database=DATABASE)[0]
+    total = int(row[0])
+    span = float(row[4] or 0)
+    result = {"first_id": first_id, "last_id": last_id, "expected_events": total,
+              "unpublished": int(row[1] or 0), "updated": int(row[2] or 0), "stock": int(row[3] or 0),
+              "input_span_s": span, "input_rate": total / span if span else None, "groups": {}}
+    for group in EVENT_GROUPS:
+        in_range = f"c.consumer_group = '{group}' AND c.event_id BETWEEN {first_id} AND {last_id}"
+        g = mysql(f"SELECT COUNT(*), COUNT(DISTINCT c.event_id), SUM(j.id IS NULL),"
+                  f" TIMESTAMPDIFF(MICROSECOND, MIN(c.consumed_at), MAX(c.consumed_at)) / 1e6"
+                  f" FROM consumed_events c LEFT JOIN search_index_jobs j ON j.id = c.event_id WHERE {in_range}",
+                  database=DATABASE)[0]
+        lags = [int(r[0]) / 1000 for r in mysql(
+            f"SELECT TIMESTAMPDIFF(MICROSECOND, c.event_created_at, c.consumed_at) FROM consumed_events c WHERE {in_range}",
+            database=DATABASE)]
+        peak = mysql(f"SELECT COALESCE(MAX(n), 0) FROM (SELECT COUNT(*) AS n FROM consumed_events c WHERE {in_range}"
+                     " GROUP BY FLOOR(UNIX_TIMESTAMP(c.consumed_at))) t", database=DATABASE)[0][0]
+        rows, distinct, orphans = int(g[0]), int(g[1]), int(g[2] or 0)
+        effect_span = float(g[3] or 0)
+        result["groups"][group] = {
+            "ledger_rows": rows,
+            "missing": total - (distinct - orphans),
+            "duplicate_ledger_rows": rows - distinct,
+            "orphan_ledger_rows": orphans,
+            "completion_rate": rows / effect_span if effect_span else None,
+            "peak_effects_per_s": int(peak),
+            "lag_ms": ({"p50": percentile(lags, 0.50), "p95": percentile(lags, 0.95), "p99": percentile(lags, 0.99),
+                        "max": max(lags)} if lags else None),
+        }
+    return result
+
+
+def edit_fixture(path: Path) -> Path:
+    """Every product's editable fields as JSON for k6, so an UPDATED edit re-saves the product unchanged."""
+    rows = mysql("SELECT JSON_OBJECT('id', id, 'name', name, 'imageURL', image_url, 'price', ROUND(price_cents / 100, 2),"
+                 " 'description', description, 'categoryId', category_id) FROM products"
+                 " WHERE description <> '' AND name <> '' AND image_url <> '' ORDER BY id", database=DATABASE)
+    unescape = {"n": "\n", "t": "\t", "0": "\0", "\\": "\\"}  # mysql -B escapes these in its output
+    products = [json.loads(re.sub(r"\\(.)", lambda m: unescape.get(m.group(1), m.group(0)), "\t".join(r)))
+                for r in rows]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(products))
+    return path
+
+
+def wait_drained(timeout_s: float, sample) -> tuple[bool, float]:
+    """Waits until sample() shows every outbox row published and applied by both groups."""
+    started = time.monotonic()
+    while True:
+        counts = sample()
+        if counts["unpublished"] == 0 and all(counts[g] >= counts["outbox"] for g in EVENT_GROUPS):
+            return True, time.monotonic() - started
+        if time.monotonic() - started > timeout_s:
+            return False, time.monotonic() - started
+        time.sleep(1)
+
+
+def recovery(samples: list[dict], fault_at: float, restored_at: float) -> dict:
+    """Peak backlog and the time after the restore until the backlog was back at its pre-fault level."""
+    def backlog(s: dict) -> int:
+        return max(s["outbox"] - s[g] for g in EVENT_GROUPS)
+    before = [backlog(s) for s in samples if fault_at - 15 <= s["t"] < fault_at]
+    baseline = max(before) if before else 0
+    after = [s for s in samples if s["t"] >= fault_at]
+    recovered = next((s["t"] for s in after if s["t"] >= restored_at and backlog(s) <= max(baseline, 1)), None)
+    return {"pre_fault_backlog": baseline, "peak_backlog": max((backlog(s) for s in after), default=0),
+            "peak_unpublished": max((s["unpublished"] for s in after), default=0),
+            "recovered_s_after_restore": None if recovered is None else recovered - restored_at,
+            "recovered_s_after_fault": None if recovered is None else recovered - fault_at}
+
+
+def cmd_events_run(args: argparse.Namespace) -> None:
+    """Admin edits at a fixed rate, then drain, reconcile every outbox ID, and optionally inject one fault."""
+    if not backend_events_enabled():
+        raise SystemExit("events are off; run `bench.py up --events` first")
+    out_dir = RESULTS_DIR / "events" / (f"{stamp()}_{args.rate:g}eps" + (f"_{args.fault}" if args.fault else ""))
+    data = edit_fixture(out_dir / "products.json")
+    token = admin_token()
+    env = {"BASE_URL": "http://backend:8080", "RATE": str(args.rate), "REQUEST_TIMEOUT": args.timeout,
+           "GATE_P95_MS": str(args.p95_ms), "GATE_MAX_FAILURE_RATE": str(args.max_failure_rate),
+           "TRACE_SEED": str(args.trace_seed), "ADMIN_TOKEN": token, "K6_NO_USAGE_REPORT": "true"}
+    if duration_seconds(args.warmup) > 0:
+        warm_first = outbox_max_id() + 1
+        log(f"events @ {args.rate:g}/s: warm-up {args.warmup}")
+        run_k6("catalog-edits.js", env | {"DURATION": args.warmup, "WARMUP": "1",
+                                          "SUMMARY_FILE": "/results/warmup-summary.json"}, out_dir, data=data)
+        drained, _ = wait_drained(args.drain_timeout, lambda: pipeline_counts(warm_first))
+        if not drained:
+            raise SystemExit("the pipeline did not drain after the warm-up; check the worker and broker")
+    first_id = outbox_max_id() + 1
+    counters = CounterTotals()
+    counters.add(worker_counters())
+    counters_before = counters.totals()
+    samples: list[dict] = []
+    t0 = time.monotonic()
+    stop = threading.Event()
+
+    def sample() -> dict:
+        counts = pipeline_counts(first_id) | {"t": time.monotonic() - t0}
+        samples.append(counts)
+        return counts
+
+    def sampler() -> None:
+        while not stop.wait(1):
+            try:
+                sample()
+                counters.add(worker_counters())
+            except (subprocess.CalledProcessError, IndexError, ValueError):
+                pass  # a container is restarting; the next sample catches up
+
+    fault: dict = {}
+
+    def inject() -> None:
+        service, action = FAULTS[args.fault]
+        time.sleep(args.fault_at)
+        fault["at"] = time.monotonic() - t0
+        if action == "kill":
+            log(f"fault: SIGKILL {service} at {fault['at']:.1f}s, then start it again")
+            compose("kill", "-s", "SIGKILL", service, capture=True)
+        else:
+            log(f"fault: stopping {service} at {fault['at']:.1f}s for {args.fault_for:g}s")
+            compose("stop", service, capture=True)
+            time.sleep(args.fault_for)
+        compose("start", service, capture=True)
+        fault["restored_at"] = time.monotonic() - t0
+        log(f"fault: {service} started again at {fault['restored_at']:.1f}s")
+
+    threads = [threading.Thread(target=sampler, daemon=True)]
+    if args.fault:
+        threads.append(threading.Thread(target=inject, daemon=True))
+    for thread in threads:
+        thread.start()
+    log(f"events @ {args.rate:g}/s: measuring {args.duration} from outbox id {first_id}"
+        + (f", fault {args.fault} at {args.fault_at:g}s" if args.fault else ""))
+    started = utc_now()
+    code = run_k6("catalog-edits.js", env | {"DURATION": args.duration, "SUMMARY_FILE": "/results/summary.json"},
+                  out_dir, data=data)
+    load_done = time.monotonic() - t0
+    if args.fault:
+        threads[1].join()
+    last_id = outbox_max_id()
+    drained, drain_s = wait_drained(args.drain_timeout, sample)
+    stop.set()
+    threads[0].join()
+    counters.add(worker_counters())
+    summary_path = out_dir / "summary.json"
+    summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
+    latency = metric(summary, f"http_req_duration{{route:catalog_edit}}")
+    after = counters.totals()
+    result = {
+        "rate": args.rate, "duration": args.duration, "warmup": args.warmup, "started_at": started,
+        "k6": {"exit_code": code, "requests": metric(summary, "http_reqs{route:catalog_edit}").get("count", 0),
+               "successful": metric(summary, "successful_requests").get("count", 0),
+               "unexpected_failure_rate": metric(summary, "unexpected_failures").get("rate", 0.0),
+               "dropped_iterations": metric(summary, "dropped_iterations").get("count", 0),
+               "latency_ms": {k: latency.get(k) for k in ("med", "p(95)", "p(99)", "max")}},
+        "load_seconds": load_done, "drained": drained, "drain_seconds_after_load": drain_s,
+        "reconcile": reconcile(first_id, last_id),
+        "worker_counters": {k: after.get(k, 0.0) - counters_before.get(k, 0.0) for k in sorted(after)},
+        "search_versions": search_version_mismatches(first_id, last_id),
+        "dead_letters": dead_letters(),
+        "fault": ({"name": args.fault, **fault, **recovery(samples, fault["at"], fault["restored_at"])}
+                  if args.fault else None),
+        "settings": {"max_reconsume": compose("exec", "-T", "worker", "printenv", "EVENTS_CONSUMER_MAX_RECONSUME_TIMES",
+                                              capture=True, check=False).stdout.strip(),
+                     "limits": limits(), "trace_seed": args.trace_seed},
+        "git": git_info(), "host": host_info(),
+    }
+    (out_dir / "samples.json").write_text(json.dumps(samples) + "\n")
+    (out_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print_events_result(result)
+    log(f"results: {out_dir.relative_to(REPO_DIR)}")
+
+
+def print_events_result(result: dict) -> None:
+    rec = result["reconcile"]
+    k6 = result["k6"]
+    log(f"input: {rec['expected_events']} events ({rec['updated']} UPDATED, {rec['stock']} STOCK) at "
+        f"{fmt(rec['input_rate'])}/s; k6 p95 {fmt(k6['latency_ms']['p(95)'])} ms, "
+        f"{k6['unexpected_failure_rate'] * 100:.2f}% failed, {k6['dropped_iterations']} dropped")
+    for group, g in rec["groups"].items():
+        lag = g["lag_ms"] or {}
+        log(f"{group}: missing {g['missing']}, duplicate ledger rows {g['duplicate_ledger_rows']}, "
+            f"{fmt(g['completion_rate'])}/s (peak {g['peak_effects_per_s']}/s), lag ms p50 {fmt(lag.get('p50'))} "
+            f"p95 {fmt(lag.get('p95'))} p99 {fmt(lag.get('p99'))} max {fmt(lag.get('max'))}")
+    log(f"drained: {result['drained']} ({result['drain_seconds_after_load']:.1f}s after load); "
+        f"worker counters {result['worker_counters']}; search versions {result['search_versions']}; "
+        f"dead letters {result['dead_letters']}")
+    if result.get("fault"):
+        log(f"fault: {result['fault']}")
+
+
+def cmd_events_replay(args: argparse.Namespace) -> None:
+    """Operator replay: re-publishes, under their original IDs, the run's events a group never applied."""
+    run_dir = Path(args.run) if Path(args.run).exists() else RESULTS_DIR / "events" / args.run
+    result = json.loads((run_dir / "result.json").read_text())
+    first_id, last_id = result["reconcile"]["first_id"], result["reconcile"]["last_id"]
+    groups = [args.group] if args.group else list(EVENT_GROUPS)
+    ids: set[int] = set()
+    if args.all:
+        # Every event again, as if the publisher crashed after each send and before marking it published.
+        ids = {int(r[0]) for r in mysql(f"SELECT id FROM search_index_jobs WHERE id BETWEEN {first_id} AND {last_id}",
+                                        database=DATABASE)}
+    for group in ([] if args.all else groups):
+        ids |= {int(r[0]) for r in mysql(
+            f"SELECT j.id FROM search_index_jobs j LEFT JOIN consumed_events c ON c.event_id = j.id"
+            f" AND c.consumer_group = '{group}' WHERE j.id BETWEEN {first_id} AND {last_id} AND c.event_id IS NULL",
+            database=DATABASE)}
+    log(f"replay: {len(ids)} events in {first_id}..{last_id} "
+        + ("(all of them)" if args.all else f"lack an effect in {', '.join(groups)}"))
+    counters = CounterTotals()
+    counters.add(worker_counters())
+    before = counters.totals()
+    started = time.monotonic()
+    ordered = sorted(ids)
+    for start in range(0, len(ordered), 1000):
+        chunk = ",".join(map(str, ordered[start:start + 1000]))
+        # Clearing published_at hands the rows back to the publisher, which sends them with the same event IDs.
+        mysql(f"UPDATE search_index_jobs SET published_at = NULL WHERE id IN ({chunk})", database=DATABASE)
+    drained, seconds = wait_drained(args.drain_timeout, lambda: pipeline_counts(first_id))
+    counters.add(worker_counters())
+    after = counters.totals()
+    replay = {"replayed": len(ids), "all": args.all, "groups": groups, "drained": drained,
+              "seconds": time.monotonic() - started, "reconcile": reconcile(first_id, last_id),
+              "worker_counters": {k: after.get(k, 0.0) - before.get(k, 0.0) for k in sorted(after)},
+              "search_versions": search_version_mismatches(first_id, last_id), "dead_letters": dead_letters()}
+    name = "resend.json" if args.all else "replay.json"
+    (run_dir / name).write_text(json.dumps(replay, indent=2) + "\n")
+    log(f"replay: drained {drained} in {replay['seconds']:.1f}s; worker counters {replay['worker_counters']}")
+    for group, g in replay["reconcile"]["groups"].items():
+        log(f"{group}: missing {g['missing']}, duplicate ledger rows {g['duplicate_ledger_rows']}")
+    log(f"search versions {replay['search_versions']}; results: {(run_dir / name).relative_to(REPO_DIR)}")
+
+
 # --------------------------------------------------------------------------- k6
 
 def k6_env(scenario: str, args: argparse.Namespace, fixture: dict, rate: float, duration: str) -> dict[str, str]:
@@ -284,27 +797,42 @@ def k6_env(scenario: str, args: argparse.Namespace, fixture: dict, rate: float, 
         "GATE_P95_MS": str(args.p95_ms),
         "GATE_MAX_FAILURE_RATE": str(args.max_failure_rate),
         "TRACE_SEED": str(args.trace_seed),
-        "PRODUCT_COUNT": str(fixture["catalog_products"]),
         "TOTAL_PRODUCTS": str(fixture["total_products"]),
-        "HOT_SKU_ID": str(fixture["hot_sku"]["id"]),
-        "CART_USERS": str(fixture["carts_with_hot_sku"]),
-        "FIRST_USER_ID": str(fixture["users"]["first_id"]),
-        "BENCH_PASSWORD": fixture["users"]["password"],
         "K6_NO_USAGE_REPORT": "true",
     }
+    if fixture.get("dataset", "synthetic") == "synthetic":
+        env |= {
+            "PRODUCT_COUNT": str(fixture["catalog_products"]),
+            "HOT_SKU_ID": str(fixture["hot_sku"]["id"]),
+            "CART_USERS": str(fixture["carts_with_hot_sku"]),
+            "FIRST_USER_ID": str(fixture["users"]["first_id"]),
+            "BENCH_PASSWORD": fixture["users"]["password"],
+        }
     if scenario == "detail":
         env["PATTERN"] = args.pattern
     if scenario == "page":
         env["SORT"] = args.sort
         env["SIZE"] = str(args.size)
         env["CATEGORIES"] = str(fixture["categories"])
+    if scenario == "search":
+        env["ENGINE"] = args.engine
+        env["SIZE"] = str(args.size)
     for item in getattr(args, "env", None) or []:
         key, _, value = item.partition("=")
         env[key] = value
     return env
 
 
-def run_k6(script: str, env: dict[str, str], results_dir: Path, tokens: Path | None = None) -> int:
+def search_query_trace() -> Path:
+    """The WANDS query strings (both splits; this is a latency trace, not a relevance score) for k6."""
+    path = WANDS_DIR / "k6-queries.json"
+    queries = json.loads((WANDS_DIR / "queries.json").read_text())
+    path.write_text(json.dumps([q["query"] for q in sorted(queries, key=lambda q: q["query_id"])]))
+    return path
+
+
+def run_k6(script: str, env: dict[str, str], results_dir: Path, tokens: Path | None = None,
+           queries: Path | None = None, data: Path | None = None) -> int:
     results_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "docker", "run", "--rm", "--network", NETWORK,
@@ -315,6 +843,10 @@ def run_k6(script: str, env: dict[str, str], results_dir: Path, tokens: Path | N
     ]
     if tokens is not None:
         cmd += ["-v", f"{tokens}:/tokens.json:ro"]
+    if queries is not None:
+        cmd += ["-v", f"{queries}:/queries.json:ro"]
+    if data is not None:
+        cmd += ["-v", f"{data}:/data.json:ro"]
     for key, value in env.items():
         cmd += ["-e", f"{key}={value}"]
     cmd += [K6_IMAGE, "run", "--quiet", f"/scripts/{script}"]
@@ -388,6 +920,7 @@ def run_trials(scenario: str, args: argparse.Namespace, fixture: dict, rate: flo
     spec = SCENARIOS[scenario]
     results = []
     tokens = sign_in(fixture, fixture["carts_with_hot_sku"], out_dir / "tokens.json") if spec.get("tokens") else None
+    queries = search_query_trace() if spec.get("queries") else None
     for trial in range(1, trials + 1):
         trial_dir = out_dir / f"trial-{trial}"
         if getattr(args, "flush_cache", False):
@@ -397,13 +930,13 @@ def run_trials(scenario: str, args: argparse.Namespace, fixture: dict, rate: flo
             log(f"{scenario} @ {rate}/s trial {trial}/{trials}: warm-up {warmup}")
             env = k6_env(scenario, args, fixture, rate, warmup) | {
                 "WARMUP": "1", "SUMMARY_FILE": "/results/warmup-summary.json"}
-            run_k6(spec["script"], env, trial_dir, tokens)
+            run_k6(spec["script"], env, trial_dir, tokens, queries)
         log(f"{scenario} @ {rate}/s trial {trial}/{trials}: measuring {duration}")
         before = digest_snapshot()
         cache_before = cache_snapshot()
         started = utc_now()
         env = k6_env(scenario, args, fixture, rate, duration) | {"SUMMARY_FILE": "/results/summary.json"}
-        code = run_k6(spec["script"], env, trial_dir, tokens)
+        code = run_k6(spec["script"], env, trial_dir, tokens, queries)
         finished = utc_now()
         sql = digest_delta(before, digest_snapshot())
         cache = cache_delta(cache_before, cache_snapshot(), spec.get("cache"))
@@ -480,8 +1013,11 @@ def write_run_report(out_dir: Path, manifest: dict, results: list[dict]) -> None
         "",
         f"- Commit `{manifest['git']['commit'][:12]}` on `{manifest['git']['branch']}`"
         + (" with uncommitted changes" if manifest["git"]["dirty"] else ""),
-        f"- Fixture v{fixture['fixture_version']}, seed {fixture['seed']}, {fixture['catalog_products']} catalog "
-        f"products, sha256 `{fixture['sql_sha256'][:12]}`",
+        (f"- WANDS fixture v{fixture['fixture_version']}, {fixture['total_products']} products, "
+         f"sha256 `{fixture['sql_sha256'][:12]}`; engine {manifest.get('engine')}"
+         if fixture.get("dataset") == "wands" else
+         f"- Fixture v{fixture['fixture_version']}, seed {fixture['seed']}, {fixture['catalog_products']} catalog "
+         f"products, sha256 `{fixture['sql_sha256'][:12]}`"),
         f"- Warm-up {manifest['warmup']}, measured {manifest['duration']}, trace seed {manifest['trace_seed']}, "
         f"request timeout {manifest['request_timeout']}",
         f"- Catalog cache: {manifest['cache']['type']}"
@@ -519,7 +1055,8 @@ def run_manifest(scenario: str, args: argparse.Namespace, fixture: dict, rate: f
         "rate": rate,
         "pattern": args.pattern if scenario == "detail" else None,
         "sort": args.sort if scenario == "page" else None,
-        "size": args.size if scenario == "page" else None,
+        "size": args.size if scenario in ("page", "search") else None,
+        "engine": args.engine if scenario == "search" else None,
         "trials": trials,
         "warmup": warmup,
         "duration": duration,
@@ -541,14 +1078,49 @@ def run_manifest(scenario: str, args: argparse.Namespace, fixture: dict, rate: f
 
 # --------------------------------------------------------------------------- commands
 
+def create_event_topic() -> None:
+    """Creates the ProductChanged topic (the broker never auto-creates topics). Idempotent.
+
+    mqadmin runs in a one-off container on the bench network: inside the broker container its JVM would share the
+    broker's memory limit."""
+    network = f"{PROJECT}_default"
+    deadline = time.monotonic() + 120
+    while True:
+        out = sh(["docker", "run", "--rm", "--network", network, "-e", "JAVA_OPT_EXT=-Xmx256m", ROCKETMQ_IMAGE,
+                  "sh", "mqadmin", "updateTopic", "-n", "rocketmq-namesrv:9876", "-c", "bench", "-t", EVENT_TOPIC],
+                 capture=True, check=False).stdout
+        if "success" in out:
+            log(f"RocketMQ topic {EVENT_TOPIC} ready")
+            return
+        # The broker reports healthy before its first registration with the name server.
+        if time.monotonic() > deadline:
+            raise SystemExit(f"creating RocketMQ topic {EVENT_TOPIC} failed:\n{out}")
+        time.sleep(2)
+
+
 def cmd_up(args: argparse.Namespace) -> None:
-    cache = getattr(args, "cache", None) or os.environ.get("BENCH_CACHE", "none")
+    events = bool(getattr(args, "events", False)) or os.environ.get("BENCH_EVENTS", "false") == "true"
+    os.environ["BENCH_EVENTS"] = "true" if events else "false"
+    # Both consumer groups need their stores: search-indexer (Elasticsearch) and cache-invalidator (Redis cache).
+    cache = "redis" if events else (getattr(args, "cache", None) or os.environ.get("BENCH_CACHE", "none"))
     os.environ["BENCH_CACHE"] = cache
-    services = ["mysql", "redis", "backend"] + (["prometheus", "grafana"] if args.observability else [])
+    search = events or bool(getattr(args, "search", False)) or os.environ.get("BENCH_SEARCH", "false") == "true"
+    os.environ["BENCH_SEARCH"] = "true" if search else "false"
+    os.environ["BENCH_SEARCH_ENGINE"] = "elasticsearch" if search else "mysql"
+    # With events the consumer groups run in their own worker container, so the backend only publishes.
+    os.environ["BENCH_BACKEND_CONSUMERS"] = "false" if events else "true"
+    if events:
+        compose("up", "-d", "--wait", "rocketmq-namesrv", "rocketmq-broker")
+        create_event_topic()
+    else:
+        compose("rm", "--stop", "--force", "worker", capture=True, check=False)
+    services = (["mysql", "redis"] + (["elasticsearch"] if search else []) + ["backend"] + (["worker"] if events else [])
+                + (["prometheus", "grafana"] if args.observability else []))
     build_flag = "--no-build" if getattr(args, "no_build", False) else "--build"
     compose("up", "-d", build_flag, "--wait", *services, observability=args.observability)
     log(f"stack {PROJECT}: backend on http://127.0.0.1:{BACKEND_PORT} (actuator stays on the internal port 8081), "
-        f"catalog cache {backend_cache_config()['type']}")
+        f"catalog cache {backend_cache_config()['type']}, Elasticsearch {'on' if search else 'off'}, "
+        f"RocketMQ events {'on' if events else 'off'}")
     if cache == "redis":
         flush_cache()
     if args.observability:
@@ -580,13 +1152,52 @@ def cmd_seed(args: argparse.Namespace) -> None:
     # Rows changed under the cache, so drop anything cached from the previous fixture.
     flush_cache()
     log(f"verified {counts[0]} products, {counts[1]} users, {counts[2]} carts, hot SKU stock {counts[3]}")
+    if backend_search_enabled():
+        rebuild_search_index(manifest["total_products"])
+
+
+def cmd_seed_wands(args: argparse.Namespace) -> None:
+    """Loads the WANDS catalog (Sprint 3 relevance and search load runs) instead of the synthetic fixture."""
+    raw = WANDS_DIR / "raw"
+    missing = [f for f in ("product.csv", "query.csv", "label.csv") if not (raw / f).exists()]
+    if missing:
+        raise SystemExit(f"missing {', '.join(missing)} in {raw.relative_to(REPO_DIR)}; download them with\n  "
+                         + "\n  ".join(f"curl -fL -o {raw.relative_to(REPO_DIR)}/{f} {WANDS_URL}/{f}" for f in missing))
+    sh([sys.executable, "-I", str(WANDS_LOADER), "--raw-dir", str(raw), "--out-dir", str(WANDS_DIR),
+        "--split-seed", str(args.split_seed)])
+    manifest = json.loads((WANDS_DIR / "manifest.json").read_text())
+    log(f"loading WANDS into {DATABASE}")
+    with open(WANDS_DIR / "wands.sql") as sql:
+        compose("exec", "-T", "-e", f"MYSQL_PWD={MYSQL_ROOT_PASSWORD}", "mysql",
+                "mysql", "-uroot", "--default-character-set=utf8mb4", DATABASE, stdin=sql, capture=True)
+    count = int(mysql("SELECT COUNT(*) FROM products", database=DATABASE)[0][0])
+    if count != manifest["total_products"]:
+        raise SystemExit(f"WANDS verification failed: {count} products, expected {manifest['total_products']}")
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    (FIXTURE_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    flush_cache()
+    log(f"verified {count} WANDS products in {manifest['categories']} categories")
+    if backend_search_enabled():
+        rebuild_search_index(count)
+    else:
+        log("Elasticsearch is off; run `up --search` and `seed-wands` again to index the catalog")
+
+
+def check_dataset(scenario: str, fixture: dict) -> None:
+    """The search scenario needs the WANDS catalog (real queries); the others need the synthetic fixture."""
+    dataset = fixture.get("dataset", "synthetic")
+    if (scenario == "search") != (dataset == "wands"):
+        raise SystemExit(f"scenario {scenario} does not run on the {dataset} fixture; "
+                         + ("run `bench.py seed-wands`" if scenario == "search" else "run `bench.py seed`"))
 
 
 def cmd_run(args: argparse.Namespace) -> None:
     fixture = load_fixture_manifest()
+    check_dataset(args.scenario, fixture)
     rate = args.rate if args.rate is not None else SCENARIOS[args.scenario]["rate"]
     label = (f"{args.scenario}_{rate:g}rps" + (f"_{args.pattern}" if args.scenario == "detail" else "")
-             + (f"_{args.sort}" if args.scenario == "page" else ""))
+             + (f"_{args.sort}" if args.scenario == "page" else "")
+             + (f"_{args.engine}" if args.scenario == "search" else ""))
     out_dir = RESULTS_DIR / "runs" / f"{stamp()}_{label}"
     manifest = run_manifest(args.scenario, args, fixture, rate, args.trials, args.warmup, args.duration)
     results = run_trials(args.scenario, args, fixture, rate, out_dir, args.trials, args.warmup, args.duration)
@@ -602,8 +1213,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_ladder(args: argparse.Namespace) -> None:
     fixture = load_fixture_manifest()
+    check_dataset(args.scenario, fixture)
     rates = [float(r) for r in args.rates.split(",")]
-    label = f"ladder_{args.scenario}" + (f"_{args.pattern}" if args.scenario == "detail" else "")
+    label = (f"ladder_{args.scenario}" + (f"_{args.pattern}" if args.scenario == "detail" else "")
+             + (f"_{args.engine}" if args.scenario == "search" else ""))
     out_dir = RESULTS_DIR / "runs" / f"{stamp()}_{label}"
     manifest = run_manifest(args.scenario, args, fixture, rates[0], 1, args.warmup, args.duration)
     manifest["rates"] = rates
@@ -999,6 +1612,11 @@ def main() -> None:
     up.add_argument("--no-build", action="store_true", help="reuse the existing backend image")
     up.add_argument("--cache", choices=["none", "redis"],
                     help="catalog cache for the backend (default: $BENCH_CACHE or none); recreates the backend")
+    up.add_argument("--search", action="store_true",
+                    help="also start Elasticsearch and enable the search engine and indexer (default: $BENCH_SEARCH)")
+    up.add_argument("--events", action="store_true",
+                    help="also start RocketMQ and publish the catalog outbox to the search and cache consumers; "
+                         "implies --search and --cache redis (default: $BENCH_EVENTS)")
     up.set_defaults(func=cmd_up)
 
     down = sub.add_parser("down", help="stop the bench stack")
@@ -1013,6 +1631,39 @@ def main() -> None:
     seed.add_argument("--hot-sku-stock", type=int, default=20)
     seed.set_defaults(func=cmd_seed)
 
+    seed_wands = sub.add_parser("seed-wands", help="load the WANDS catalog for search relevance and load runs")
+    seed_wands.add_argument("--split-seed", type=int, default=20261109,
+                            help="seed for the tuning/held-out query split; fix it before looking at results")
+    seed_wands.set_defaults(func=cmd_seed_wands)
+
+    lag = sub.add_parser("search-lag", help="time from an admin edit to the first search response that reflects it")
+    lag.add_argument("--samples", type=int, default=50, help="edits to time, one at a time")
+    lag.add_argument("--interval-ms", type=int, default=50, help="search probe interval")
+    lag.add_argument("--pause-ms", type=int, default=200, help="gap between samples")
+    lag.add_argument("--outage", type=float, default=0,
+                     help="also pause Elasticsearch for this many seconds while editing, and time the catch-up")
+    lag.set_defaults(func=cmd_search_lag)
+
+    events = sub.add_parser("events", help="catalog event pipeline: load, reconcile, faults, replay (Sprint 5)")
+    events_sub = events.add_subparsers(dest="events_command", required=True)
+    ev_run = events_sub.add_parser("run", help="admin edits at a fixed rate, then drain and reconcile every event")
+    ev_run.add_argument("--rate", type=float, default=50, help="offered admin edits/sec (one event each)")
+    ev_run.add_argument("--warmup", default="30s")
+    ev_run.add_argument("--duration", default="5m")
+    ev_run.add_argument("--fault", choices=sorted(FAULTS), help="inject one fault during the measured window")
+    ev_run.add_argument("--fault-at", type=float, default=60, help="seconds into the measured window")
+    ev_run.add_argument("--fault-for", type=float, default=30, help="downtime for stop-* faults")
+    ev_run.add_argument("--drain-timeout", type=float, default=300, help="seconds to wait for the backlog to clear")
+    add_gate_options(ev_run)
+    ev_run.set_defaults(func=cmd_events_run)
+    ev_replay = events_sub.add_parser("replay", help="re-publish a run's unapplied events under their original IDs")
+    ev_replay.add_argument("run", help="run directory or its name under results/events")
+    ev_replay.add_argument("--group", choices=EVENT_GROUPS, help="only events this group never applied")
+    ev_replay.add_argument("--all", action="store_true",
+                           help="re-publish every event in the run (a producer crash window; all must be skipped)")
+    ev_replay.add_argument("--drain-timeout", type=float, default=300)
+    ev_replay.set_defaults(func=cmd_events_replay)
+
     for name, func, help_text in (("run", cmd_run, "warm-up plus measured trials at one rate"),
                                   ("ladder", cmd_ladder, "step the rate until the gate fails")):
         p = sub.add_parser(name, help=help_text)
@@ -1020,7 +1671,9 @@ def main() -> None:
         p.add_argument("--pattern", choices=["uniform", "hot"], default="uniform",
                        help="detail access pattern (hot = 80%% of reads on 20%% of products)")
         p.add_argument("--sort", choices=["id", "price_asc"], default="id", help="page scenario sort")
-        p.add_argument("--size", type=int, default=20, help="page scenario page size")
+        p.add_argument("--size", type=int, default=20, help="page and search scenario page size")
+        p.add_argument("--engine", choices=["mysql", "elasticsearch"], default="elasticsearch",
+                       help="search scenario engine")
         p.add_argument("--env", action="append", metavar="KEY=VALUE", help="extra k6 env var")
         p.add_argument("--flush-cache", action="store_true",
                        help="empty Redis before each trial (with --warmup 0s this measures a cold cache)")
@@ -1062,7 +1715,7 @@ def main() -> None:
     smoke.set_defaults(func=cmd_smoke)
 
     args = parser.parse_args()
-    if sys.platform == "darwin" and args.command in ("run", "ladder", "smoke", "burst"):
+    if sys.platform == "darwin" and args.command in ("run", "ladder", "smoke", "burst", "events"):
         # Keep macOS from idle-sleeping mid-run; it exits when this process does.
         # Closing the lid on battery can still sleep the machine, so stay plugged in.
         subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
